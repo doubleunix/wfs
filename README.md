@@ -1,6 +1,6 @@
 # wnix
 
-An extremely small nix based OS (not nixos)
+Double Unix
 
 ## build
 

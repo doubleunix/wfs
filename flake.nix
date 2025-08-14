@@ -13,30 +13,27 @@
     bb  = pkgs.pkgsStatic.busybox;
 
     # Build a tiny rootfs from repo files + two symlinks in /bin
-    rootfs = with pkgs; pkgs.runCommand "munix-rootfs" { } ''
+    rootfs = with pkgs; pkgs.runCommand "wnix-rootfs" { } ''
       set -eu
       mkdir -p $out/bin $out/tmp $out/etc/nix $out/etc/wnix $out/etc/ssl/certs
-      ln -s ${bb}/bin/busybox   $out/bin/sh
-      ln -s ${bb}/bin/busybox   $out/bin/ls
-      ln -s ${bb}/bin/busybox   $out/bin/cat
-      ln -s ${nix}/bin/nix      $out/bin/nix
-      ln -s ${vim}/bin/vim      $out/bin/vim
-      ln -s ${nixos-rebuild}/bin/nixos-rebuild       $out/bin/wnix
-      cp -a ${./root/etc/os-release}                 $out/etc/os-release
-      cp -a ${./root/etc/nix/nix.conf}               $out/etc/nix/nix.conf
-      cp -a ${./root/etc/wnix/flake.nix}             $out/etc/wnix/flake.nix
-      cp -a ${./root/etc/wnix/configuration.nix}     $out/etc/wnix/configuration.nix
-      cp -a ${./root/etc/wnix/Makefile}              $out/etc/wnix/Makefile
-      cp -a ${./root/etc/passwd}                     $out/etc/passwd
-      cp -a ${./root/etc/group}                      $out/etc/group
-      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt    $out/etc/ssl/certs/ca-bundle.crt
+      #ln -s ${bb}/bin/busybox                       $out/bin/sh
+      ln -s ${bb}/bin/busybox                       $out/bin/ls
+      ln -s ${bb}/bin/busybox                       $out/bin/cat
+      ln -s ${bash}/bin/bash                        $out/bin/sh
+      ln -s ${nix}/bin/nix                          $out/bin/nix
+      cp -a ${./root/bin/wnix}                      $out/bin/wnix
+
+      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt   $out/etc/ssl/certs/ca-bundle.crt
+      cp -a ${./root/etc/os-release}                $out/etc/os-release
+      cp -a ${./root/etc/nix/nix.conf}              $out/etc/nix/nix.conf
+      cp -a ${./root/etc/wnix/flake.nix}            $out/flake.nix
+      cp -a ${./root/etc/passwd}                    $out/etc/passwd
+      cp -a ${./root/etc/group}                     $out/etc/group
     '';
 
     extra = pkgs.buildEnv {
       name = "extra";
       paths = with pkgs; [
-        gnumake
-        # nix
       ];
       # pathsToLink = [ "/bin" ];
     };
@@ -56,7 +53,7 @@
         Entrypoint = [ "/bin/sh" ];
         WorkingDir = "/";
         Env = [
-          "PATH=/bin"
+          "PATH=/bin:/.nix-profile/bin"
           "NIX_CONF_DIR=/etc/nix"
           "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
         ];
