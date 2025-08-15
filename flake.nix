@@ -1,264 +1,176 @@
-{
-  description = "Tiny LFS-style OS (one shared root for Docker + ISO/QEMU)";
+let
+  system = "x86_64-linux";
+  pkgs   = import nixpkgs { inherit system; };
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # core
+  bb      = pkgs.pkgsStatic.busybox;
+  nix     = pkgs.nix;
+  systemd = pkgs.systemd;            # provides systemd, networkd, resolved
+  iwd     = pkgs.iwd;                # Wi-Fi daemon + iwctl
+  cacert  = pkgs.cacert;
+  kernel  = pkgs.linuxPackages_latest.kernel;
 
-  outputs = { self, nixpkgs }:
-  let
-    system = "x86_64-linux";
-    pkgs   = import nixpkgs { inherit system; };
-    lib    = nixpkgs.lib;
+  # include systemd, iwd, nix in the closure so ISO/initramfs are self-contained
+  runtimeClosure = pkgs.closureInfo { rootPaths = [ systemd iwd nix ]; };
 
-    bb     = pkgs.pkgsStatic.busybox;     # static, tiny
-    nix    = pkgs.nix;                    # dynamic, we’ll include its closure
-    bash   = pkgs.pkgsStatic.bash;
-    cacert = pkgs.cacert;
-    kernel = pkgs.linuxPackages_latest.kernel;
+  # --- tiny stage-1: mount basics + cgroup2, then jump to systemd PID1 ---
+  stage1Init = pkgs.writeShellScript "init" ''
+    #!/bin/sh
+    set -eu
+    mount -t proc     proc /proc
+    mount -t sysfs    sys  /sys
+    mount -t devtmpfs dev  /dev || true
+    mkdir -p /run /dev/pts /dev/shm /sys/fs/cgroup
+    mount -t devpts   devpts /dev/pts || true
+    mount -t tmpfs    tmpfs /dev/shm || true
+    # systemd (PID1) needs unified cgroup v2 here:
+    mount -t cgroup2  none /sys/fs/cgroup || true
+    exec /lib/systemd/systemd
+  '';
 
-    # Add the NIC modules we’ll need
-    netModules = pkgs.makeModulesClosure {
-      rootModules = [ "e1000" "e1000e" "virtio_pci" "virtio_net" ];
-      kernel = kernel;
-      firmware = pkgs.linux-firmware;
-    };
+  # --- root filesystem shared by Docker/ISO/partition ---
+  rootfs = pkgs.runCommand "wnix-rootfs" { } ''
+    set -euo pipefail
+    mkdir -p $out/{bin,sbin,lib,usr,run,etc/{systemd/network,iwd,ssl/certs},var,root}
+    chmod 1777 $out/run
 
-    # Full runtime closure for nix so it runs in ISO/initramfs (offline)
-    nixClosure = pkgs.closureInfo { rootPaths = [ pkgs.nix pkgs.dhcpcd ]; };
+    # minimal userland: busybox for tools; nix CLI; systemd & iwd from store (rsync will deref)
+    cp -a ${bb}/bin/busybox $out/bin/busybox
+    ln -s busybox $out/bin/sh; ln -s busybox $out/bin/ls; ln -s busybox $out/bin/cat
+    ln -s ${nix}/bin/nix     $out/bin/nix
+    ln -s ${iwd}/bin/iwctl   $out/bin/iwctl
 
-    udhcpcScript = pkgs.writeScript "udhcpc.default.script" ''
-      #!/bin/sh
-      # BusyBox udhcpc hook: set IP, route, DNS
-      RESOLV_CONF="/etc/resolv.conf"
+    # make systemd available in-place (rsync --copy-links later will materialize files)
+    ln -s ${systemd}/lib/systemd $out/lib/systemd
 
-      case "$1" in
-        deconfig)
-          /bin/busybox ifconfig "$interface" 0.0.0.0
-          : > "$RESOLV_CONF"
-          ;;
-        bound|renew)
-          BROADCAST=""; [ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
-          /bin/busybox ifconfig "$interface" "$ip" netmask "$subnet" $BROADCAST
+    # certificates & nix.conf
+    mkdir -p $out/etc/nix
+    ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
+    cat > $out/etc/nix/nix.conf <<'EOF'
+    experimental-features = nix-command flakes
+    accept-flake-config = true
+    build-users-group =
+    ssl-cert-file = /etc/ssl/certs/ca-bundle.crt
+    substituters = https://cache.nixos.org
+    trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+    EOF
 
-          if [ -n "$router" ]; then
-            /bin/busybox route del default 2>/dev/null || true
-            set -- $router; GW="$1"
-            /bin/busybox route add default gw "$GW" dev "$interface"
-          fi
+    # ---------------- systemd networking (wifi via iwd + DHCP via networkd) ----------------
+    # Let networkd DHCP any WLAN interface
+    cat > $out/etc/systemd/network/25-wlan.network <<'EOF'
+    [Match]
+    Type=wlan
 
-          : > "$RESOLV_CONF"
-          for ns in $dns; do echo "nameserver $ns" >> "$RESOLV_CONF"; done
-          ;;
-      esac
+    [Network]
+    DHCP=yes
+    EOF
+    # iwd: leave IP config to networkd (iwctl for connecting)
+    cat > $out/etc/iwd/main.conf <<'EOF'
+    [General]
+    EnableNetworkConfiguration=false
+    EOF
+    # resolved stub resolver
+    mkdir -p $out/etc
+    ln -s /run/systemd/resolve/stub-resolv.conf $out/etc/resolv.conf
 
-      exit 0
-    '';
+    # enable services (like `systemctl enable ...`)
+    mkdir -p $out/etc/systemd/system/multi-user.target.wants
+    ln -s /lib/systemd/system/systemd-networkd.service \
+          $out/etc/systemd/system/multi-user.target.wants/systemd-networkd.service
+    ln -s /lib/systemd/system/systemd-resolved.service \
+          $out/etc/systemd/system/multi-user.target.wants/systemd-resolved.service
+    ln -s ${iwd}/lib/systemd/system/iwd.service \
+          $out/etc/systemd/system/multi-user.target.wants/iwd.service
 
-    # -------- minimal root at / (what Docker's copyToRoot should see) --------
-    rootfs = pkgs.runCommand "wnix-rootfs" { } ''
+    # required for systemd on first boot
+    : > $out/etc/machine-id
+
+    # os-release (optional)
+    cat > $out/etc/os-release <<'EOF'
+    ID=wnix
+    NAME="WNIX"
+    PRETTY_NAME="WNIX (systemd+iwd)"
+    EOF
+  '';
+
+  # put /nix/store payload for systemd+iwd+nix into the image
+  storePayload = pkgs.runCommand "store" {} ''
+    set -euo pipefail
+    mkdir -p $out/nix/store
+    while IFS= read -r p; do cp -a "$p" $out/nix/store/; done < ${runtimeClosure}/store-paths
+  '';
+
+  systemRoot = pkgs.symlinkJoin { name = "wnix-system-root"; paths = [ rootfs storePayload ]; };
+
+  # initramfs: same root as disk/ISO/docker, then add /init that execs systemd
+  initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
+    { buildInputs = with pkgs; [ cpio gzip rsync ]; }
+    ''
       set -euo pipefail
-      mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp,usr/share/udhcpc,root}
-      chmod 1777 $out/tmp
-
-      # Shell + a couple of applets (we'll install the rest at boot)
-      cp -a ${bb}/bin/busybox  $out/bin/busybox
-      ln -s busybox            $out/bin/ls
-      ln -s busybox            $out/bin/cat
-      ln -s ${bash}/bin/bash   $out/bin/sh
-      ln -s ${nix}/bin/nix     $out/bin/nix
-      cp -a ${./root/bin/wnix} $out/bin/wnix
-
-      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
-                 $out/etc/ssl/certs/ca-bundle.crt
-
-      # BusyBox DHCP hook so DNS works
-      install -Dm0755 ${udhcpcScript} $out/usr/share/udhcpc/default.script
-
-      cat > $out/etc/os-release <<'EOF'
-      ID=wnix
-      NAME="WNIX"
-      EOF
-
-      cat > $out/etc/passwd << 'EOF'
-      root:x:0:0:Root:/root:/bin/sh
-      EOF
-
-      cat > $out/etc/group << 'EOF'
-      root:x:0:
-      EOF
-
-      cat > $out/etc/nix/nix.conf <<'EOF'
-      experimental-features = nix-command flakes
-      accept-flake-config = true
-      build-users-group =
-      ssl-cert-file = /etc/ssl/certs/ca-bundle.crt
-      substituters = https://cache.nixos.org
-      trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-      EOF
-
-      # BusyBox programs we need to call from init
-      ln -s busybox $out/bin/udhcpc
-      ln -s busybox $out/bin/ifconfig
-      ln -s busybox $out/bin/route
-
-      # udhcpc writes a pidfile under /var/run by default
-      ln -s ${pkgs.dhcpcd}/bin/dhcpcd $out/bin/dhcpcd
-      mkdir -p $out/{var,run}
-      ln -s ../run $out/var/run
-
-
+      mkdir -p root
+      rsync -a --copy-links --chmod=Du+w ${systemRoot}/ root/
+      install -Dm0755 ${stage1Init} root/init
+      (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
     '';
 
-    # Bring /nix/store for nix (and friends) into the root (works offline)
-    nixStore = pkgs.runCommand "wnix-nixstore" { } ''
+  iso = pkgs.runCommand "wnix.iso"
+    { buildInputs = with pkgs; [ xorriso syslinux ]; }
+    ''
       set -euo pipefail
-      mkdir -p $out/nix/store
-      while IFS= read -r p; do
-        cp -a "$p" $out/nix/store/
-      done < ${nixClosure}/store-paths
+      mkdir -p iso/isolinux iso/boot
+      cp ${pkgs.syslinux}/share/syslinux/isolinux.bin iso/isolinux/
+      cp ${pkgs.syslinux}/share/syslinux/ldlinux.c32  iso/isolinux/
+      cat > iso/isolinux/isolinux.cfg <<'CFG'
+      DEFAULT wnix
+      PROMPT 0
+      TIMEOUT 10
+      LABEL wnix
+        KERNEL /boot/bzImage
+        APPEND initrd=/boot/initramfs.cpio.gz console=ttyS0
+      CFG
+      cp ${kernel}/bzImage iso/boot/bzImage
+      cp ${initramfs}     iso/boot/initramfs.cpio.gz
+      xorriso -as mkisofs \
+        -iso-level 3 -full-iso9660-filenames \
+        -volid WNIX \
+        -eltorito-boot isolinux/isolinux.bin \
+        -eltorito-catalog isolinux/boot.cat \
+        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        -isohybrid-mbr ${pkgs.syslinux}/share/syslinux/isohdpfx.bin \
+        -output $out iso
     '';
-
-    # Single source of truth for all targets
-    systemRoot = pkgs.symlinkJoin {
-      name  = "wnix-system-root";
-      paths = [ rootfs nixStore ];
+in {
+  packages.${system} = {
+    docker = pkgs.dockerTools.buildImage {
+      name = "wnix"; tag = "latest";
+      copyToRoot = [ systemRoot ];
+      config = {
+        Entrypoint = [ "/bin/sh" ];  # dev shell; systemd-in-docker is not needed
+        Env = [
+          "HOME=/root" "PATH=/bin:/usr/bin:/root/.nix-profile/bin"
+          "NIX_CONF_DIR=/etc/nix" "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+        ];
+      };
     };
+    root      = systemRoot;
+    kernel    = kernel;
+    initramfs = initramfs;
+    iso       = iso;
+  };
 
-    # -------- tiny, target-agnostic /init (no ISO-specific logic here) -------
-    stage1Init = pkgs.writeShellScript "init" ''
-      set -euo pipefail
-      export PATH=/bin
-      export HOME=/root
-
-      /bin/busybox --install -s /bin
-
-      mkdir -pv /proc /sys /dev /run /root
-
-      mount -t proc     proc     /proc
-      mount -t sysfs    sysfs    /sys
-      mount -t tmpfs    tmpfs    /run
-      mount -t devtmpfs devtmpfs /dev
-
-      mkdir -pv /dev/{pts,shm}
-      mount -t devpts   devpts   /dev/pts
-      mount -t tmpfs    tmpfs    /dev/shm
-
-      # load likely NIC modules (you already copy them)
-      for m in e1000 e1000e virtio_pci virtio_net; do /bin/modprobe "$m" 2>/dev/null || true; done
-
-      # pick an interface (or fall back to eth0) and bring it up
-      IFACE="$(ls /sys/class/net | grep -v '^lo$' | head -n1 || true)"; [ -z "$IFACE" ] && IFACE="eth0"
-      /bin/ifconfig "$IFACE" up || true
-
-      # one-shot IPv4 DHCP; waits for a lease, writes routes and /etc/resolv.conf
-      /bin/dhcpcd -w -q "$IFACE" || true
-
-      echo "Wnix is alive!"
-      exec /bin/sh
-    '';
-
-    # -------- initramfs: same root as Docker, but with symlinks resolved -----
-    initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
-      { buildInputs = with pkgs; [ cpio gzip rsync coreutils ]; }
-      ''
-        set -euo pipefail
-        mkdir -p root
-        # Deref symlinks from systemRoot so binaries are *real* files in RAM.
-        rsync -a --copy-links --chmod=Du+w ${systemRoot}/ root/
-
-        mkdir -p root/lib
-        cp -a ${netModules}/lib/modules root/lib/
-
-        install -Dm0755 ${stage1Init} root/init
-        # sanity
-        test -x root/bin/sh
-        test -x root/bin/busybox
-        test -e root/nix/store
-        (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
-      '';
-
-    # -------- BIOS-bootable ISO (boots kernel + the initramfs above) ---------
-    iso = pkgs.runCommand "wnix.iso"
-      { buildInputs = with pkgs; [ xorriso syslinux ]; }
-      ''
-        set -euo pipefail
-        mkdir -p iso/isolinux iso/boot
-        cp ${pkgs.syslinux}/share/syslinux/isolinux.bin iso/isolinux/
-        cp ${pkgs.syslinux}/share/syslinux/ldlinux.c32  iso/isolinux/
-        cat > iso/isolinux/isolinux.cfg <<'CFG'
-        DEFAULT wnix
-        PROMPT 0
-        TIMEOUT 20
-        LABEL wnix
-          KERNEL /boot/bzImage
-          APPEND initrd=/boot/initramfs.cpio.gz console=ttyS0
-        CFG
-        cp ${kernel}/bzImage            iso/boot/bzImage
-        cp ${initramfs}                 iso/boot/initramfs.cpio.gz
-        xorriso -as mkisofs \
-          -iso-level 3 -full-iso9660-filenames \
-          -volid WNIX \
-          -eltorito-boot isolinux/isolinux.bin \
-          -eltorito-catalog isolinux/boot.cat \
-          -no-emul-boot -boot-load-size 4 -boot-info-table \
-          -isohybrid-mbr ${pkgs.syslinux}/share/syslinux/isohdpfx.bin \
-          -output $out iso
-      '';
-  in
-  {
-    packages.${system} = {
-      # Docker: same root; your -v nix:/nix still overrides /nix if you want
-      docker = pkgs.dockerTools.buildImage {
-        name = "wnix";
-        tag  = "latest";
-        copyToRoot = [ systemRoot ];  # add one thing, not many
-        config = {
-          Entrypoint = [ "/bin/sh" ]; # BusyBox sh
-          WorkingDir = "/";
-          Env = [
-            "HOME=/root"
-            "PATH=/bin:/root/.nix-profile/bin"
-            "NIX_CONF_DIR=/etc/nix"
-            "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-          ];
-        };
-      };
-
-      root      = systemRoot;
-      kernel    = kernel;
-      initramfs = initramfs;
-      iso       = iso;
-    };
-
-    apps.${system} = {
-      initrd = {
-        type = "app";
-        program = lib.getExe (pkgs.writeShellApplication {
-          name = "run-qemu-initrd";
-          text = ''
-            exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
-              -m 1024 -nographic \
-              -kernel ${kernel}/bzImage \
-              -initrd ${initramfs} \
-              -append "console=ttyS0"
-          '';
-        });
-      };
-      qemu = {
-        type = "app";
-        program = lib.getExe (pkgs.writeShellApplication {
-          name = "run-qemu-iso";
-          text = ''
-            exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
-              -m 1024 -nographic \
-              -cdrom ${iso} \
-              -kernel ${kernel}/bzImage \
-              -initrd ${initramfs} \
-              -nic user,model=e1000 \
-              -append "console=ttyS0 ip=dhcp" \
-              -boot d
-          '';
-        });
-      };
+  apps.${system} = {
+    qemu = {
+      type = "app";
+      program = lib.getExe (pkgs.writeShellApplication {
+        name = "run-qemu-iso";
+        text = ''
+          exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
+            -m 2048 -nographic \
+            -cdrom ${iso} \
+            -nic user,model=e1000 \
+            -boot d
+        '';
+      });
     };
   };
 }
