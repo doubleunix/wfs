@@ -34,12 +34,20 @@
 
       # certs + tiny config
       ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
+
       cat > $out/etc/os-release <<'EOF'
       ID=wnix
       NAME="WNIX"
       EOF
-      echo 'root:x:0:0:Root:/root:/bin/sh' > $out/etc/passwd
-      echo 'root:x:0:'                     > $out/etc/group
+
+      cat > $out/etc/passwd << 'EOF'
+      root:x:0:0:Root:/root:/bin/sh
+      EOF
+
+      cat > $out/etc/group << 'EOF'
+      root:x:0:
+      EOF
+
       cat > $out/etc/nix/nix.conf <<'EOF'
       experimental-features = nix-command flakes
       accept-flake-config = true
@@ -48,6 +56,7 @@
       substituters = https://cache.nixos.org
       trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
       EOF
+
     '';
 
     # Bring /nix/store for nix (and friends) into the root (works offline)
@@ -69,7 +78,6 @@
       export PATH=/bin
       # Ensure mount points exist *before* mounting (fixes ENOENT)
       mkdir -p /proc /sys /dev /dev/pts /dev/shm /run
-      # Make BusyBox applets visible (ls, mount, mknod, etc.)
       /bin/busybox --install -s /bin || true
 
       mount -t proc     proc     /proc
@@ -85,7 +93,7 @@
 
     # -------- initramfs: same root as Docker, but with symlinks resolved -----
     initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
-      { buildInputs = with pkgs; [ cpio gzip rsync ]; }
+      { buildInputs = with pkgs; [ cpio gzip rsync coreutils ]; }
       ''
         set -euo pipefail
         mkdir -p root
