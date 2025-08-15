@@ -10,7 +10,7 @@ iso:
 initrd:
 	$(NIX) run .#initrd
 
-docker: clean
+docker:
 	@docker rmi $(PKG) 2>/dev/null || true
 	$(NIX) build .#docker
 	docker load < result
