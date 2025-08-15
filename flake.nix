@@ -225,7 +225,7 @@
             exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
               -m 1024 -nographic \
               -cdrom ${iso} \
-              -nic user,model=e1000 \
+              -nic user,model=virtio \
               -boot d
           '';
         });
