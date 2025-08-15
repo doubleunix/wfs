@@ -1,0 +1,7 @@
+for pkg in exec personal secret; do
+    source /src/${pkg}/etc/bashrc
+    export PATH="/src/${pkg}/bin:${PATH}"
+done
+
+venv wnix
+export PS1="$(echo "$PS1" | sed 's@\\h@wnix@')"
