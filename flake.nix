@@ -18,26 +18,59 @@
     # Full runtime closure for nix so it runs in ISO/initramfs (offline)
     nixClosure = pkgs.closureInfo { rootPaths = [ nix ]; };
 
+    udhcpcScript = pkgs.writeScript "udhcpc.default.script" ''
+      #!/bin/sh
+      # BusyBox udhcpc hook: set IP, route, DNS
+      RESOLV_CONF="/etc/resolv.conf"
+
+      case "$1" in
+        deconfig)
+          /bin/ifconfig "$interface" 0.0.0.0
+          : > "$RESOLV_CONF"
+          ;;
+
+        bound|renew)
+          BROADCAST=""
+          [ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
+
+          /bin/ifconfig "$interface" "$ip" netmask "$subnet" $BROADCAST
+
+          # Default route
+          if [ -n "$router" ]; then
+            /bin/route del default 2>/dev/null || true
+            # Use the first router if multiple are provided
+            set -- $router; GW="$1"
+            /bin/route add default gw "$GW" dev "$interface"
+          fi
+
+          # DNS
+          : > "$RESOLV_CONF"
+          for ns in $dns; do echo "nameserver $ns" >> "$RESOLV_CONF"; done
+          ;;
+      esac
+
+      exit 0
+    '';
+
     # -------- minimal root at / (what Docker's copyToRoot should see) --------
     rootfs = pkgs.runCommand "wnix-rootfs" { } ''
       set -euo pipefail
-      mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp}
+      mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp,usr/share/udhcpc,root}
       chmod 1777 $out/tmp
 
-      # Shell + a couple of applets (we'll "install" the rest at boot)
+      # Shell + a couple of applets (we'll install the rest at boot)
       cp -a ${bb}/bin/busybox  $out/bin/busybox
       ln -s busybox            $out/bin/ls
       ln -s busybox            $out/bin/cat
-
       ln -s ${bash}/bin/bash   $out/bin/sh
-
-      # nix CLI in PATH (libs come from nixStore below)
       ln -s ${nix}/bin/nix     $out/bin/nix
-
-      # certs + tiny config
-      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
-
       cp -a ${./root/bin/wnix} $out/bin/wnix
+
+      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
+                 $out/etc/ssl/certs/ca-bundle.crt
+
+      # BusyBox DHCP hook so DNS works
+      install -Dm0755 ${udhcpcScript} $out/usr/share/udhcpc/default.script
 
       cat > $out/etc/os-release <<'EOF'
       ID=wnix
@@ -82,9 +115,11 @@
     stage1Init = pkgs.writeShellScript "init" ''
       set -euo pipefail
       export PATH=/bin
+      export HOME=/root
+
       /bin/busybox --install -s /bin || true
-      # Ensure mount points exist *before* mounting (fixes ENOENT)
-      mkdir -p /proc /sys /dev /dev/pts /dev/shm /run
+
+      mkdir -pv /proc /sys /dev /dev/pts /dev/shm /run /root
 
       mount -t proc     proc     /proc
       mount -t sysfs    sysfs    /sys
@@ -92,6 +127,12 @@
       mount -t devpts   devpts   /dev/pts || true
       mount -t tmpfs    tmpfs    /dev/shm || true
       mount -t tmpfs    tmpfs    /run || true
+
+      # One-shot DHCP on the first non-lo interface (writes /etc/resolv.conf)
+      IFACE="$(ls /sys/class/net | grep -v '^lo$' | head -n1 || true)"
+      if [ -n "$IFACE" ]; then
+        /bin/udhcpc -i "$IFACE" -q -t 5 -T 3 -s /usr/share/udhcpc/default.script || true
+      fi
 
       echo "Wnix is alive!"
       exec /bin/sh
