@@ -79,64 +79,41 @@
     initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
       { buildInputs = with pkgs; [ cpio gzip ]; }
       ''
-        set -eu
-        mkdir -p root/{bin,etc/nix,etc/wnix,proc,sys,dev,run,tmp,root}
+        set -euo pipefail
+        mkdir -pv root/{bin,etc/{nix,wnix,ssl/certs},proc,sys,dev,run,tmp,root}
         chmod 1777 root/tmp
 
         # Put statically linked busybox in /bin
         cp -av ${bb}/bin/busybox root/bin/busybox
-        ln -sv busybox root/bin/sh
-        ln -sv busybox root/bin/mount
-        ln -sv busybox root/bin/mknod
-        ln -sv busybox root/bin/mkdir
-        #chmod +x root/bin/busybox
+        ln -sv busybox           root/bin/sh
+        ln -sv busybox           root/bin/mount
+        ln -sv busybox           root/bin/mknod
+        ln -sv busybox           root/bin/mkdir
 
-        ln -s ${pkgs.nix}/bin/nix           root/bin/nix
-        mkdir -p root/etc/ssl/certs
-        ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt root/etc/ssl/certs/ca-bundle.crt
+        ln -s ${nix}/bin/nix     root/bin/nix
+        ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
+                   root/etc/ssl/certs/ca-bundle.crt
 
         # Reuse your config/registry/nixpkgs from rootfs
         cp -a ${rootfs}/etc/nix/nix.conf                root/etc/nix/nix.conf
-        cp -a ${pinned-registry}/etc/nix/registry.json  root/etc/nix/registry.json
-        cp -a ${nixpkgs-src}/etc/wnix/nixpkgs           root/etc/wnix/nixpkgs
-
-        # Minimal init: mount basics, seed /dev, tmpfs /nix, then shell
-        #cat > root/init <<"SH"
-        ##!/bin/sh
-        #set -eu
-        #mount -t proc proc /proc
-        #mount -t sysfs sysfs /sys
-        #mount -t tmpfs tmpfs /run
-        #mount -t tmpfs tmpfs /nix -o mode=755,exec
-        #mkdir -p /dev/pts /dev/shm
-        #mount -t devpts devpts /dev/pts
-        #mount -t tmpfs tmpfs /dev/shm
-        #[ -c /dev/null ]   || mknod -m 666 /dev/null c 1 3
-        #[ -c /dev/zero ]   || mknod -m 666 /dev/zero c 1 5
-        #[ -c /dev/tty ]    || mknod -m 666 /dev/tty c 5 0
-        #[ -c /dev/random ] || mknod -m 666 /dev/random c 1 8
-        #[ -c /dev/urandom ]|| mknod -m 666 /dev/urandom c 1 9
-        #export HOME=/root PATH=/bin:/root/.nix-profile/bin NIX_CONF_DIR=/etc/nix NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
-        #echo "WNIX init: ready"
-        #exec /bin/sh
-        #SH
-        #chmod +x root/init
+        #cp -a ${pinned-registry}/etc/nix/registry.json  root/etc/nix/registry.json
+        #cp -a ${nixpkgs-src}/etc/wnix/nixpkgs           root/etc/wnix/nixpkgs
 
         cat > root/init <<"SH"
         #!/bin/sh
-        set -eu
+        set -euo pipefail
         mount -t proc proc /proc
         mount -t sysfs sysfs /sys
         mkdir -p /dev/pts /dev/shm
         mount -t devpts devpts /dev/pts
         mount -t tmpfs tmpfs /dev/shm
         # devices
-        mknod -m 666 /dev/null c 1 3
-        mknod -m 666 /dev/zero c 1 5
-        mknod -m 666 /dev/tty c 5 0
-        mknod -m 666 /dev/random c 1 8
-        mknod -m 666 /dev/urandom c 1 9
-        echo "WNIX init: ready"
+        mknod -m 666 /dev/null      c 1 3
+        mknod -m 666 /dev/zero      c 1 5
+        mknod -m 666 /dev/tty       c 5 0
+        mknod -m 666 /dev/random    c 1 8
+        mknod -m 666 /dev/urandom   c 1 9
+        echo "Wnix is alive!"
         exec /bin/sh
         SH
         chmod +x root/init
@@ -158,7 +135,7 @@
         cp ${pkgs.syslinux}/share/syslinux/ldlinux.c32  iso/isolinux/
         cat > iso/isolinux/isolinux.cfg <<'CFG'
         DEFAULT wnix
-        PROMPT 0
+        PROMPT 10
         TIMEOUT 20
         LABEL wnix
           KERNEL /boot/bzImage
@@ -168,7 +145,7 @@
         # Kernel + initramfs
         cp ${kernel}/bzImage     iso/boot/bzImage
         cp ${initramfs}          iso/boot/initramfs.cpio.gz
-        cp -av ${bb}/bin/*       iso/bin
+        #cp -av ${bb}/bin/*       iso/bin
 
         # Create hybrid ISO (BIOS boot)
         xorriso -as mkisofs \
