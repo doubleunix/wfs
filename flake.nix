@@ -11,6 +11,7 @@
 
     bb     = pkgs.pkgsStatic.busybox;     # static, tiny
     nix    = pkgs.nix;                    # dynamic, we’ll include its closure
+    bash   = pkgs.pkgsStatic.bash;
     cacert = pkgs.cacert;
     kernel = pkgs.linuxPackages_latest.kernel;
 
@@ -25,9 +26,10 @@
 
       # Shell + a couple of applets (we'll "install" the rest at boot)
       cp -a ${bb}/bin/busybox  $out/bin/busybox
-      ln -s busybox            $out/bin/sh
       ln -s busybox            $out/bin/ls
       ln -s busybox            $out/bin/cat
+
+      ln -s ${bash}/bin/bash   $out/bin/sh
 
       # nix CLI in PATH (libs come from nixStore below)
       ln -s ${nix}/bin/nix     $out/bin/nix
