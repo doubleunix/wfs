@@ -19,6 +19,7 @@
     netModules = pkgs.makeModulesClosure {
       rootModules = [ "e1000" "e1000e" "virtio_pci" "virtio_net" ];
       kernel = kernel;
+      firmware = pkgs.linux-firmware;
     };
 
     # Full runtime closure for nix so it runs in ISO/initramfs (offline)
@@ -238,7 +239,7 @@
             exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
               -m 1024 -nographic \
               -cdrom ${iso} \
-              -nic user,model=virtio \
+              -nic user,model=e1000 \
               -boot d
           '';
         });
