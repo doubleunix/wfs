@@ -83,35 +83,59 @@
         mkdir -p root/{bin,etc/nix,etc/wnix,proc,sys,dev,run,tmp,root}
         chmod 1777 root/tmp
 
-        # Minimal tools
-        ln -s ${bb}/bin/busybox             root/bin/busybox
-        ln -s /bin/busybox                  root/bin/sh
+        # Put statically linked busybox in /bin
+        cp -av ${bb}/bin/busybox root/bin/busybox
+        ln -sv busybox root/bin/sh
+        ln -sv busybox root/bin/mount
+        ln -sv busybox root/bin/mknod
+        ln -sv busybox root/bin/mkdir
+        #chmod +x root/bin/busybox
+
         ln -s ${pkgs.nix}/bin/nix           root/bin/nix
         mkdir -p root/etc/ssl/certs
         ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt root/etc/ssl/certs/ca-bundle.crt
 
         # Reuse your config/registry/nixpkgs from rootfs
-        cp -a ${rootfs}/etc/nix/nix.conf           root/etc/nix/nix.conf
-        cp -a ${pinned-registry}/etc/nix/registry.json root/etc/nix/registry.json
-        cp -a ${nixpkgs-src}/etc/wnix/nixpkgs      root/etc/wnix/nixpkgs
+        cp -a ${rootfs}/etc/nix/nix.conf                root/etc/nix/nix.conf
+        cp -a ${pinned-registry}/etc/nix/registry.json  root/etc/nix/registry.json
+        cp -a ${nixpkgs-src}/etc/wnix/nixpkgs           root/etc/wnix/nixpkgs
 
         # Minimal init: mount basics, seed /dev, tmpfs /nix, then shell
+        #cat > root/init <<"SH"
+        ##!/bin/sh
+        #set -eu
+        #mount -t proc proc /proc
+        #mount -t sysfs sysfs /sys
+        #mount -t tmpfs tmpfs /run
+        #mount -t tmpfs tmpfs /nix -o mode=755,exec
+        #mkdir -p /dev/pts /dev/shm
+        #mount -t devpts devpts /dev/pts
+        #mount -t tmpfs tmpfs /dev/shm
+        #[ -c /dev/null ]   || mknod -m 666 /dev/null c 1 3
+        #[ -c /dev/zero ]   || mknod -m 666 /dev/zero c 1 5
+        #[ -c /dev/tty ]    || mknod -m 666 /dev/tty c 5 0
+        #[ -c /dev/random ] || mknod -m 666 /dev/random c 1 8
+        #[ -c /dev/urandom ]|| mknod -m 666 /dev/urandom c 1 9
+        #export HOME=/root PATH=/bin:/root/.nix-profile/bin NIX_CONF_DIR=/etc/nix NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
+        #echo "WNIX init: ready"
+        #exec /bin/sh
+        #SH
+        #chmod +x root/init
+
         cat > root/init <<"SH"
         #!/bin/sh
         set -eu
         mount -t proc proc /proc
         mount -t sysfs sysfs /sys
-        mount -t tmpfs tmpfs /run
-        mount -t tmpfs tmpfs /nix -o mode=755,exec
         mkdir -p /dev/pts /dev/shm
         mount -t devpts devpts /dev/pts
         mount -t tmpfs tmpfs /dev/shm
-        [ -c /dev/null ]   || mknod -m 666 /dev/null c 1 3
-        [ -c /dev/zero ]   || mknod -m 666 /dev/zero c 1 5
-        [ -c /dev/tty ]    || mknod -m 666 /dev/tty c 5 0
-        [ -c /dev/random ] || mknod -m 666 /dev/random c 1 8
-        [ -c /dev/urandom ]|| mknod -m 666 /dev/urandom c 1 9
-        export HOME=/root PATH=/bin:/root/.nix-profile/bin NIX_CONF_DIR=/etc/nix NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
+        # devices
+        mknod -m 666 /dev/null c 1 3
+        mknod -m 666 /dev/zero c 1 5
+        mknod -m 666 /dev/tty c 5 0
+        mknod -m 666 /dev/random c 1 8
+        mknod -m 666 /dev/urandom c 1 9
         echo "WNIX init: ready"
         exec /bin/sh
         SH
@@ -127,7 +151,7 @@
       { buildInputs = with pkgs; [ xorriso syslinux ]; }
       ''
         set -eu
-        mkdir -p iso/isolinux iso/boot
+        mkdir -p iso/isolinux iso/boot iso/bin
 
         # isolinux (BIOS)
         cp ${pkgs.syslinux}/share/syslinux/isolinux.bin iso/isolinux/
@@ -144,6 +168,7 @@
         # Kernel + initramfs
         cp ${kernel}/bzImage     iso/boot/bzImage
         cp ${initramfs}          iso/boot/initramfs.cpio.gz
+        cp -av ${bb}/bin/*       iso/bin
 
         # Create hybrid ISO (BIOS boot)
         xorriso -as mkisofs \
@@ -195,23 +220,29 @@
 
       runQemuInitrd = {
         type = "app";
-        program = lib.getExe (pkgs.writeShellScript "run-qemu-initrd" ''
-          exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
-            -m 1024 -nographic \
-            -kernel ${kernel}/bzImage \
-            -initrd ${initramfs} \
-            -append "console=ttyS0"
-        '');
+        program = lib.getExe (pkgs.writeShellApplication {
+          name = "run-qemu-initrd";
+          text = ''
+            exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
+              -m 1024 -nographic \
+              -kernel ${kernel}/bzImage \
+              -initrd ${initramfs} \
+              -append "console=ttyS0"
+          '';
+        });
       };
 
       runQemuIso = {
         type = "app";
-        program = lib.getExe (pkgs.writeShellScript "run-qemu-iso" ''
-          exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
-            -m 1024 -nographic \
-            -cdrom ${iso} \
-            -boot d
-        '');
+        program = lib.getExe (pkgs.writeShellApplication {
+          name = "run-qemu-iso";
+          text = ''
+            exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
+              -m 1024 -nographic \
+              -cdrom ${iso} \
+              -boot d
+          '';
+        });
       };
     };
   };
