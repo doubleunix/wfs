@@ -1,5 +1,5 @@
 {
-  description = "Tiny LFS-style OS (one shared root for Docker + ISO/QEMU)";
+  description = "Wnix";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -10,8 +10,7 @@
     lib    = nixpkgs.lib;
 
     busybox = pkgs.pkgsStatic.busybox;
-    nix     = pkgs.pkgsStatic.nix;
-    bash    = pkgs.pkgsStatic.bash;
+    nix     = pkgs.nix;
     cacert  = pkgs.cacert;
     kernel  = pkgs.linuxPackages_latest.kernel;
 
@@ -25,11 +24,14 @@
       chmod 1777 $out/tmp
 
       # Shell + a couple of applets (we'll "install" the rest at boot)
-      cp -a ${busybox}/bin/busybox  $out/bin/busybox
-      ln -s busybox                 $out/bin/ls
-      ln -s busybox                 $out/bin/cat
-      ln -s busybox                 $out/bin/sh
-      ln -s ${nix}/bin/nix          $out/bin/nix
+      #cp -a ${busybox}/bin/busybox  $out/bin/busybox
+      #ln -s busybox                 $out/bin/ls
+      #ln -s busybox                 $out/bin/cat
+      #ln -s busybox                 $out/bin/sh
+
+      ln -s ${nix}/bin/nix           $out/bin/nix
+
+      ${busybox}/bin/busybox --install -s $out/bin
 
       ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
                  $out/etc/ssl/certs/ca-bundle.crt
@@ -80,7 +82,6 @@
       set -euo pipefail
       export PATH=/bin
       export HOME=/root
-      /bin/busybox --install -s /bin
       mkdir -p /proc /sys /dev /run /root
 
       mount -t proc     proc     /proc
