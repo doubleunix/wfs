@@ -1,5 +1,5 @@
 {
-  description = "Tiny LFS-style OS with a single shared root (Docker + QEMU ISO)";
+  description = "Tiny LFS-style OS (one shared root for Docker + ISO/QEMU)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -9,171 +9,97 @@
     pkgs   = import nixpkgs { inherit system; };
     lib    = nixpkgs.lib;
 
-    # Core payload we want at / in every target
-    bb     = pkgs.pkgsStatic.busybox;
-    bash   = pkgs.pkgsStatic.bash;
-    #nix    = pkgs.pkgsStatic.nix;  # Try this later! It was compiling and looked promising.
-    nix    = pkgs.nix;
+    bb     = pkgs.pkgsStatic.busybox;     # static, tiny
+    nix    = pkgs.nix;                    # dynamic, we’ll include its closure
     cacert = pkgs.cacert;
+    kernel = pkgs.linuxPackages_latest.kernel;
 
-    # Full runtime closure for nix (so nix works offline in ISO/initramfs)
+    # Full runtime closure for nix so it runs in ISO/initramfs (offline)
     nixClosure = pkgs.closureInfo { rootPaths = [ nix ]; };
 
-    nixpkgs-src = pkgs.runCommand "nixpkgs-src" {} ''
-      set -euo pipefail
-      mkdir -p $out/etc/wnix
-      cp -a ${nixpkgs.outPath} $out/etc/wnix/nixpkgs
-    '';
-
-    # --- Minimal root filesystem (copyToRoot payload) ---
+    # -------- minimal root at / (what Docker's copyToRoot should see) --------
     rootfs = pkgs.runCommand "wnix-rootfs" { } ''
       set -euo pipefail
-      mkdir -p $out/bin $out/etc/nix $out/etc/ssl/certs $out/etc/wnix $out/tmp
+      mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp}
       chmod 1777 $out/tmp
 
-      # BusyBox + /bin/sh, nix CLI
-      cp -a ${bb}/bin/busybox   $out/bin/busybox
-      cp -a ${bash}/bin/bash    $out/bin/sh
-      cp -a ${nix}/bin/nix      $out/bin/nix
-      ln -s busybox             $out/bin/ls
-      ln -s busybox             $out/bin/cat
+      # Shell + a couple of applets (we'll "install" the rest at boot)
+      cp -a ${bb}/bin/busybox  $out/bin/busybox
+      ln -s busybox            $out/bin/sh
+      ln -s busybox            $out/bin/ls
+      ln -s busybox            $out/bin/cat
 
-      # Certs via store path
+      # nix CLI in PATH (libs come from nixStore below)
+      ln -s ${nix}/bin/nix     $out/bin/nix
+
+      # certs + tiny config
       ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
-
-      # Make etc
-
-      cat > $out/etc/passwd << 'EOF'
-      root:x:0:0:Root:/root:/bin/sh
+      cat > $out/etc/os-release <<'EOF'
+      ID=wnix
+      NAME="WNIX"
       EOF
-
-      cat > $out/etc/group << 'EOF'
-      root:x:0:
-      EOF
-
-      cat > $out/etc/os-release << 'EOF'
-      id=wnix
-      EOF
-
-      cat > $out/etc/nix/nix.conf << 'EOF'
+      echo 'root:x:0:0:Root:/root:/bin/sh' > $out/etc/passwd
+      echo 'root:x:0:'                     > $out/etc/group
+      cat > $out/etc/nix/nix.conf <<'EOF'
       experimental-features = nix-command flakes
       accept-flake-config = true
       build-users-group =
-      #sandbox = false
-      # We'll provide this FHS path via a symlink in the rootfs build step:
       ssl-cert-file = /etc/ssl/certs/ca-bundle.crt
-
-      # Substituter & key:
       substituters = https://cache.nixos.org
       trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
       EOF
-
-      cat > $out/etc/profile << EOF
-      HOME=/root
-      PATH=/bin:/root/.nix-profile/bin
-      NIX_CONF_DIR=/etc/nix
-      NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
-      EOF
-
-      install -Dm0755 ${stage1Init} root/init
-
-      install -Dm0755 ${./root/bin/wnix} $out/bin/wnix
-
     '';
 
-    # Put nix's closure under /nix/store (works in ISO/initramfs; in Docker it’ll be
-    # hidden by your volume mount, which is fine and desired).
+    # Bring /nix/store for nix (and friends) into the root (works offline)
     nixStore = pkgs.runCommand "wnix-nixstore" { } ''
       set -euo pipefail
       mkdir -p $out/nix/store
       while IFS= read -r p; do cp -a "$p" $out/nix/store/; done < ${nixClosure}/store-paths
     '';
 
-    # Single shared root for all targets
+    # Single source of truth for all targets
     systemRoot = pkgs.symlinkJoin {
       name  = "wnix-system-root";
       paths = [ rootfs nixStore ];
     };
 
-    # shared stage-1 /init
+    # -------- tiny, target-agnostic /init (no ISO-specific logic here) -------
     stage1Init = pkgs.writeShellScript "init" ''
       set -euo pipefail
+      export PATH=/bin
+      # Ensure mount points exist *before* mounting (fixes ENOENT)
+      mkdir -p /proc /sys /dev /dev/pts /dev/shm /run
+      # Make BusyBox applets visible (ls, mount, mknod, etc.)
+      /bin/busybox --install -s /bin || true
+
       mount -t proc     proc     /proc
       mount -t sysfs    sysfs    /sys
       mount -t devtmpfs devtmpfs /dev || true
-      mkdir -p /dev/pts /dev/shm /run
       mount -t devpts   devpts   /dev/pts || true
       mount -t tmpfs    tmpfs    /dev/shm || true
       mount -t tmpfs    tmpfs    /run || true
+
       echo "Wnix is alive!"
       exec /bin/sh
     '';
 
-    # Kernel
-    kernel = pkgs.linuxPackages_latest.kernel;
-
-    # Initramfs that contains EXACTLY the same / as Docker's copyToRoot
-
-    initramfs_new = pkgs.runCommand "wnix-initramfs.cpio.gz"
-      { buildInputs = with pkgs; [ cpio gzip rsync ]; }  # <-- add rsync
-      ''
-        #set -euo pipefail
-        mkdir -p root/
-
-        # Effect of copyToRoot for initramfs:
-        #rsync -av --copy-links --hard-links --chmod=Du+w ${rootfs}/ root/
-        rsync -Pav --delete ${rootfs}/ root/
-
-        (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
-      '';
-
+    # -------- initramfs: same root as Docker, but with symlinks resolved -----
     initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
-      { buildInputs = with pkgs; [ cpio gzip rsync nix nixStore ]; }
+      { buildInputs = with pkgs; [ cpio gzip rsync ]; }
       ''
         set -euo pipefail
-        mkdir -pv root/{bin,etc/{nix,wnix,ssl/certs},proc,sys,dev,run,tmp,root}
-
-        # Put statically linked busybox in /bin
-        cp -av ${bb}/bin/busybox root/bin/busybox
-        ln -sv busybox           root/bin/sh
-        ln -sv busybox           root/bin/mount
-        ln -sv busybox           root/bin/mknod
-        ln -sv busybox           root/bin/mkdir
-
-        ln -s ${nix}/bin/nix     root/bin/nix
-        ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
-                   root/etc/ssl/certs/ca-bundle.crt
-
-        # Reuse your config/registry/nixpkgs from rootfs
-        cp -a ${rootfs}/etc/nix/nix.conf                root/etc/nix/nix.conf
-        cp -a ${nixpkgs-src}/etc/wnix/nixpkgs           root/etc/wnix/nixpkgs
-
-        rsync -v ${rootfs}/ root/
-        chmod 1777 root/tmp
-
-        cat > root/init <<"SH"
-        #!/bin/sh
-        set -euo pipefail
-        mount -t proc proc /proc
-        mount -t sysfs sysfs /sys
-        mkdir -p /dev/pts /dev/shm
-        mount -t devpts devpts /dev/pts
-        mount -t tmpfs tmpfs /dev/shm
-        # devices
-        mknod -m 666 /dev/null      c 1 3
-        mknod -m 666 /dev/zero      c 1 5
-        mknod -m 666 /dev/tty       c 5 0
-        mknod -m 666 /dev/random    c 1 8
-        mknod -m 666 /dev/urandom   c 1 9
-        echo "Wnix is alive!"
-        exec /bin/sh
-        SH
-        chmod +x root/init
-
+        mkdir -p root
+        # Deref symlinks from systemRoot so binaries are *real* files in RAM.
+        rsync -a --copy-links --chmod=Du+w ${systemRoot}/ root/
+        install -Dm0755 ${stage1Init} root/init
+        # sanity
+        test -x root/bin/sh
+        test -x root/bin/busybox
+        test -e root/nix/store
         (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
       '';
 
-    # BIOS-bootable ISO (isolinux) that boots the kernel+initramfs above
+    # -------- BIOS-bootable ISO (boots kernel + the initramfs above) ---------
     iso = pkgs.runCommand "wnix.iso"
       { buildInputs = with pkgs; [ xorriso syslinux ]; }
       ''
@@ -189,8 +115,8 @@
           KERNEL /boot/bzImage
           APPEND initrd=/boot/initramfs.cpio.gz console=ttyS0
         CFG
-        cp ${kernel}/bzImage iso/boot/bzImage
-        cp ${initramfs}     iso/boot/initramfs.cpio.gz
+        cp ${kernel}/bzImage            iso/boot/bzImage
+        cp ${initramfs}                 iso/boot/initramfs.cpio.gz
         xorriso -as mkisofs \
           -iso-level 3 -full-iso9660-filenames \
           -volid WNIX \
@@ -198,19 +124,18 @@
           -eltorito-catalog isolinux/boot.cat \
           -no-emul-boot -boot-load-size 4 -boot-info-table \
           -isohybrid-mbr ${pkgs.syslinux}/share/syslinux/isohdpfx.bin \
-          -output $out \
-          iso
+          -output $out iso
       '';
   in
   {
     packages.${system} = {
-      # Docker image: identical root at /
+      # Docker: same root; your -v nix:/nix still overrides /nix if you want
       docker = pkgs.dockerTools.buildImage {
         name = "wnix";
         tag  = "latest";
-        copyToRoot = [ rootfs nixStore ];
+        copyToRoot = [ systemRoot ];  # add one thing, not many
         config = {
-          Entrypoint = [ "/bin/sh" ];
+          Entrypoint = [ "/bin/sh" ]; # BusyBox sh
           WorkingDir = "/";
           Env = [
             "HOME=/root"
@@ -221,10 +146,10 @@
         };
       };
 
-      root      = rootfs;      # handy for tar/partition installs
+      root      = systemRoot;
       kernel    = kernel;
-      initramfs = initramfs;   # contains systemRoot at /
-      iso       = iso;         # boots kernel+initramfs
+      initramfs = initramfs;
+      iso       = iso;
     };
 
     apps.${system} = {
@@ -241,7 +166,6 @@
           '';
         });
       };
-
       qemu = {
         type = "app";
         program = lib.getExe (pkgs.writeShellApplication {
