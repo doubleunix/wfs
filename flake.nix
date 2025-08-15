@@ -9,12 +9,11 @@
     pkgs   = import nixpkgs { inherit system; };
     lib    = nixpkgs.lib;
 
-    bb      = pkgs.pkgsStatic.busybox;
-    nix     = pkgs.pkgsStatic.nix;
-    bash    = pkgs.pkgsStatic.bash;
-    cacert  = pkgs.cacert;
-    kernel  = pkgs.linuxPackages_latest.kernel;
-    systemd = pkgs.systemd;
+    bb     = pkgs.pkgsStatic.busybox;     # static, tiny
+    nix    = pkgs.nix;                    # dynamic, we’ll include its closure
+    bash   = pkgs.pkgsStatic.bash;
+    cacert = pkgs.cacert;
+    kernel = pkgs.linuxPackages_latest.kernel;
 
     # Full runtime closure for nix so it runs in ISO/initramfs (offline)
     nixClosure = pkgs.closureInfo { rootPaths = [ nix ]; };
@@ -29,12 +28,14 @@
       cp -a ${bb}/bin/busybox  $out/bin/busybox
       ln -s busybox            $out/bin/ls
       ln -s busybox            $out/bin/cat
+
       ln -s ${bash}/bin/bash   $out/bin/sh
+
+      # nix CLI in PATH (libs come from nixStore below)
       ln -s ${nix}/bin/nix     $out/bin/nix
 
       # certs + tiny config
-      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
-                 $out/etc/ssl/certs/ca-bundle.crt
+      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
 
       cp -a ${./root/bin/wnix} $out/bin/wnix
 
@@ -81,19 +82,16 @@
     stage1Init = pkgs.writeShellScript "init" ''
       set -euo pipefail
       export PATH=/bin
-      export HOME=/root
-
-      /bin/busybox --install -s /bin
-      mkdir -p /proc /sys /dev /run /root
+      /bin/busybox --install -s /bin || true
+      # Ensure mount points exist *before* mounting (fixes ENOENT)
+      mkdir -p /proc /sys /dev /dev/pts /dev/shm /run
 
       mount -t proc     proc     /proc
       mount -t sysfs    sysfs    /sys
-      mount -t tmpfs    tmpfs    /run
-      mount -t devtmpfs devtmpfs /dev
-
-      mkdir -pv /dev/{pts,shm}
-      mount -t devpts   devpts   /dev/pts
-      mount -t tmpfs    tmpfs    /dev/shm
+      mount -t devtmpfs devtmpfs /dev || true
+      mount -t devpts   devpts   /dev/pts || true
+      mount -t tmpfs    tmpfs    /dev/shm || true
+      mount -t tmpfs    tmpfs    /run || true
 
       echo "Wnix is alive!"
       exec /bin/sh
@@ -105,8 +103,13 @@
       ''
         set -euo pipefail
         mkdir -p root
+        # Deref symlinks from systemRoot so binaries are *real* files in RAM.
         rsync -a --copy-links --chmod=Du+w ${systemRoot}/ root/
         install -Dm0755 ${stage1Init} root/init
+        # sanity
+        test -x root/bin/sh
+        test -x root/bin/busybox
+        test -e root/nix/store
         (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
       '';
 
@@ -164,7 +167,7 @@
     };
 
     apps.${system} = {
-      qemu-initrd = {
+      initrd = {
         type = "app";
         program = lib.getExe (pkgs.writeShellApplication {
           name = "run-qemu-initrd";
@@ -177,7 +180,7 @@
           '';
         });
       };
-      qemu-iso = {
+      qemu = {
         type = "app";
         program = lib.getExe (pkgs.writeShellApplication {
           name = "run-qemu-iso";
