@@ -24,14 +24,14 @@
       chmod 1777 $out/tmp
 
       # Shell + a couple of applets (we'll "install" the rest at boot)
-      #cp -a ${busybox}/bin/busybox  $out/bin/busybox
-      #ln -s busybox                 $out/bin/ls
-      #ln -s busybox                 $out/bin/cat
-      #ln -s busybox                 $out/bin/sh
+      cp -a ${busybox}/bin/busybox  $out/bin/busybox
+      ln -s busybox                 $out/bin/ls
+      ln -s busybox                 $out/bin/cat
+      ln -s busybox                 $out/bin/sh
 
       ln -s ${nix}/bin/nix           $out/bin/nix
 
-      ${busybox}/bin/busybox --install -s $out/bin
+      #${busybox}/bin/busybox --install -s $out/bin
 
       ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
                  $out/etc/ssl/certs/ca-bundle.crt
@@ -60,25 +60,8 @@
       trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
       EOF
 
-    '';
-
-    # Bring /nix/store for nix (and friends) into the root (works offline)
-    nixStore = pkgs.runCommand "wnix-nixstore" { } ''
-      set -euo pipefail
-      mkdir -p $out/nix/store
-      while IFS= read -r p; do
-        cp -a "$p" $out/nix/store/
-      done < ${nixClosure}/store-paths
-    '';
-
-    # Single source of truth for all targets
-    systemRoot = pkgs.symlinkJoin {
-      name  = "wnix-system-root";
-      paths = [ rootfs nixStore ];
-    };
-
-    # -------- tiny, target-agnostic /init (no ISO-specific logic here) -------
-    stage1Init = pkgs.writeShellScript "init" ''
+      cat > $out/init <<'EOF'
+      #!/bin/sh
       set -euo pipefail
       export PATH=/bin
       export HOME=/root
@@ -95,16 +78,29 @@
 
       echo "Wnix is alive!"
       exec /bin/sh
+      EOF
+
+      chmod +x $out/init
+
+      mkdir -p $out/nix/store
+      while IFS= read -r p; do
+        cp -a "$p" $out/nix/store/
+      done < ${nixClosure}/store-paths
+
     '';
+
+    systemRoot = pkgs.symlinkJoin {
+      name  = "wnix-system-root";
+      paths = [ rootfs ];
+    };
 
     # -------- initramfs: same root as Docker, but with symlinks resolved -----
     initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
       { buildInputs = with pkgs; [ cpio gzip rsync coreutils ]; }
       ''
         set -euo pipefail
-        mkdir -p root
-        rsync -a --copy-links --chmod=Du+w ${systemRoot}/ root/
-        install -Dm0755 ${stage1Init} root/init
+        rsync -av ${systemRoot}/ root/
+        chmod -Rv u+w root/
         test -x root/bin/sh
         test -x root/bin/busybox
         test -e root/nix/store
