@@ -25,25 +25,19 @@
 
       case "$1" in
         deconfig)
-          /bin/ifconfig "$interface" 0.0.0.0
+          /bin/busybox ifconfig "$interface" 0.0.0.0
           : > "$RESOLV_CONF"
           ;;
-
         bound|renew)
-          BROADCAST=""
-          [ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
+          BROADCAST=""; [ -n "$broadcast" ] && BROADCAST="broadcast $broadcast"
+          /bin/busybox ifconfig "$interface" "$ip" netmask "$subnet" $BROADCAST
 
-          /bin/ifconfig "$interface" "$ip" netmask "$subnet" $BROADCAST
-
-          # Default route
           if [ -n "$router" ]; then
-            /bin/route del default 2>/dev/null || true
-            # Use the first router if multiple are provided
+            /bin/busybox route del default 2>/dev/null || true
             set -- $router; GW="$1"
-            /bin/route add default gw "$GW" dev "$interface"
+            /bin/busybox route add default gw "$GW" dev "$interface"
           fi
 
-          # DNS
           : > "$RESOLV_CONF"
           for ns in $dns; do echo "nameserver $ns" >> "$RESOLV_CONF"; done
           ;;
@@ -117,16 +111,18 @@
       export PATH=/bin
       export HOME=/root
 
-      /bin/busybox --install -s /bin || true
+      /bin/busybox --install -s /bin
 
-      mkdir -pv /proc /sys /dev /dev/pts /dev/shm /run /root
+      mkdir -pv /proc /sys /dev /run /root
 
       mount -t proc     proc     /proc
       mount -t sysfs    sysfs    /sys
-      mount -t devtmpfs devtmpfs /dev || true
-      mount -t devpts   devpts   /dev/pts || true
-      mount -t tmpfs    tmpfs    /dev/shm || true
-      mount -t tmpfs    tmpfs    /run || true
+      mount -t tmpfs    tmpfs    /run
+      mount -t devtmpfs devtmpfs /dev
+
+      mkdir -pv /dev/{pts,shm}
+      mount -t devpts   devpts   /dev/pts
+      mount -t tmpfs    tmpfs    /dev/shm
 
       # One-shot DHCP on the first non-lo interface (writes /etc/resolv.conf)
       IFACE="$(ls /sys/class/net | grep -v '^lo$' | head -n1 || true)"
@@ -229,6 +225,7 @@
             exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
               -m 1024 -nographic \
               -cdrom ${iso} \
+              -nic user,model=e1000 \
               -boot d
           '';
         });
