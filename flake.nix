@@ -32,17 +32,64 @@
       # Your helper
       install -Dm0755 ${./root/bin/wnix} $out/bin/wnix
 
-      # Configs (tiny, explicit)
-      cp -a ${./root/etc/os-release}     $out/etc/os-release
-      cp -a ${./root/etc/nix/nix.conf}   $out/etc/nix/nix.conf
-      cp -a ${./root/etc/passwd}         $out/etc/passwd
-      cp -a ${./root/etc/group}          $out/etc/group
-
       # Certs via store path
       ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
 
-      # (Optional) keep your project flake in-tree for convenience
-      cp -a ${./root/etc/wnix/flake.nix} $out/flake.nix
+      cat > $out/etc/passwd << 'EOF'
+      root:x:0:0:Root:/root:/bin/sh
+      EOF
+
+      cat > $out/etc/group << 'EOF'
+      root:x:0:
+      EOF
+
+      cat > $out/etc/bashrc << 'EOF'
+      for pkg in exec personal secret; do
+          source /src/${pkg}/etc/bashrc
+          export PATH="/src/${pkg}/bin:${PATH}"
+      done
+
+      venv wnix
+      export PS1="$(echo "$PS1" | sed 's@\\h@wnix@')"
+
+      PYRC="$HOME/.ipython/profile_default/startup/00-pyrc.py"
+      mkdir -p "$(dirname "$PYRC")"
+      if [[ ! -e "$PYRC" ]]; then
+          ln -sv /src/exec/bin/pyrc "$PYRC"
+      fi
+      EOF
+
+      cat > $out/etc/os-release << 'EOF'
+      id=wnix
+      EOF
+
+      cat > $out/etc/passwd << 'EOF'
+      root:x:0:0:Root:/root:/bin/sh
+      EOF
+
+      cat > $out/etc/passwd << 'EOF'
+      root:x:0:0:Root:/root:/bin/sh
+      EOF
+
+      cat > $out/etc/nix/nix.conf << 'EOF'
+      experimental-features = nix-command flakes
+      accept-flake-config = true
+      build-users-group =
+      #sandbox = false
+      # We'll provide this FHS path via a symlink in the rootfs build step:
+      ssl-cert-file = /etc/ssl/certs/ca-bundle.crt
+
+      # Substituter & key:
+      substituters = https://cache.nixos.org
+      trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+      EOF
+
+      cat > /etc/profile << EOF
+      HOME=/root
+      PATH=/bin:/root/.nix-profile/bin
+      NIX_CONF_DIR=/etc/nix
+      NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
+      EOF
     '';
 
     # Single tree to reuse everywhere (cheap union; easy to extend later)
