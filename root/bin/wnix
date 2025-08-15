@@ -1,11 +1,8 @@
 #!/bin/sh
 
-OPTIONS=(--print-build-logs)
-NIX=(nix ${OPTIONS[@]})
-
 if [[ $1 == install ]]; then
     set -- "$1" $(shift; for arg do printf 'nixpkgs#%s ' "$arg"; done)
-    ${NIX[@]} profile $@
+    nix --print-build-logs profile $@
 else
-    ${NIX[@]} $@
+    nix --print-biuld-logs $@
 fi
