@@ -1,20 +1,18 @@
 PKG := wnix
 NIX := nix --print-build-logs
 
-build: clean
-	$(NIX) build
-	docker load < result
-	rm result
-	docker run --rm -it -v nix:/nix $(PKG)
-
-initrd:
-	$(NIX) run .#runQemuInitrd
+qemu: iso
+	$(NIX) run .#qemu
 
 iso:
 	$(NIX) build .#iso
 
-qemu: iso
-	$(NIX) run .#runQemuIso
+initrd:
+	$(NIX) run .#initrd
 
-clean:
+docker: clean
 	@docker rmi $(PKG) 2>/dev/null || true
+	$(NIX) build .#docker
+	docker load < result
+	rm result
+	docker run --rm -it -v nix:/nix $(PKG)

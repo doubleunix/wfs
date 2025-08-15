@@ -186,7 +186,7 @@
 
     packages.${system} = {
 
-      default = pkgs.dockerTools.buildImage {
+      docker = pkgs.dockerTools.buildImage {
         name = "wnix";
         tag  = "latest";
         copyToRoot = [
@@ -208,7 +208,6 @@
         };
       };
 
-      # Added buildable artifacts:
       kernel    = kernel;
       initramfs = initramfs;
       iso       = iso;
@@ -218,7 +217,7 @@
     # Convenience launchers
     apps.${system} = {
 
-      runQemuInitrd = {
+      initrd = {
         type = "app";
         program = lib.getExe (pkgs.writeShellApplication {
           name = "run-qemu-initrd";
@@ -232,7 +231,7 @@
         });
       };
 
-      runQemuIso = {
+      qemu = {
         type = "app";
         program = lib.getExe (pkgs.writeShellApplication {
           name = "run-qemu-iso";
