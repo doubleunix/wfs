@@ -29,11 +29,10 @@
       ln -s busybox             $out/bin/ls
       ln -s busybox             $out/bin/cat
 
-      # Your helper
-      install -Dm0755 ${./root/bin/wnix} $out/bin/wnix
-
       # Certs via store path
       ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
+
+      # Make etc
 
       cat > $out/etc/passwd << 'EOF'
       root:x:0:0:Root:/root:/bin/sh
@@ -43,32 +42,8 @@
       root:x:0:
       EOF
 
-      cat > $out/etc/bashrc << 'EOF'
-      for pkg in exec personal secret; do
-          source /src/${pkg}/etc/bashrc
-          export PATH="/src/${pkg}/bin:${PATH}"
-      done
-
-      venv wnix
-      export PS1="$(echo "$PS1" | sed 's@\\h@wnix@')"
-
-      PYRC="$HOME/.ipython/profile_default/startup/00-pyrc.py"
-      mkdir -p "$(dirname "$PYRC")"
-      if [[ ! -e "$PYRC" ]]; then
-          ln -sv /src/exec/bin/pyrc "$PYRC"
-      fi
-      EOF
-
       cat > $out/etc/os-release << 'EOF'
       id=wnix
-      EOF
-
-      cat > $out/etc/passwd << 'EOF'
-      root:x:0:0:Root:/root:/bin/sh
-      EOF
-
-      cat > $out/etc/passwd << 'EOF'
-      root:x:0:0:Root:/root:/bin/sh
       EOF
 
       cat > $out/etc/nix/nix.conf << 'EOF'
@@ -84,12 +59,17 @@
       trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
       EOF
 
-      cat > /etc/profile << EOF
+      cat > $out/etc/profile << EOF
       HOME=/root
       PATH=/bin:/root/.nix-profile/bin
       NIX_CONF_DIR=/etc/nix
       NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
       EOF
+
+      install -Dm0755 ${stage1Init} root/init
+
+      install -Dm0755 ${./root/bin/wnix} $out/bin/wnix
+
     '';
 
     # Single tree to reuse everywhere (cheap union; easy to extend later)
@@ -128,8 +108,6 @@
         # - hard-links: preserve hardlinks if any appear later
         # - chmod=Du+w: ensure dirs are user-writable so we can add /init
         rsync -a --copy-links --hard-links --chmod=Du+w ${rootfs}/ root/
-
-        install -Dm0755 ${stage1Init} root/init
 
         # sanity
         test -x root/init

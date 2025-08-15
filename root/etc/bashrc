@@ -1,0 +1,16 @@
+# Add this later, somewhere appropriate
+exit 0
+
+for pkg in exec personal secret; do
+  source /src/${pkg}/etc/bashrc
+  export PATH="/src/${pkg}/bin:${PATH}"
+done
+
+venv wnix
+export PS1="$(echo "$PS1" | sed 's@\\h@wnix@')"
+
+PYRC="$HOME/.ipython/profile_default/startup/00-pyrc.py"
+mkdir -p "$(dirname "$PYRC")"
+if [[ ! -e "$PYRC" ]]; then
+  ln -sv /src/exec/bin/pyrc "$PYRC"
+fi
