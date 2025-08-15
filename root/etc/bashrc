@@ -5,3 +5,9 @@ done
 
 venv wnix
 export PS1="$(echo "$PS1" | sed 's@\\h@wnix@')"
+
+PYRC="$HOME/.ipython/profile_default/startup/00-pyrc.py"
+mkdir -p "$(dirname "$PYRC")"
+if [[ ! -e "$PYRC" ]]; then
+    ln -sv /src/exec/bin/pyrc "$PYRC"
+fi
