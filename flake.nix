@@ -122,19 +122,19 @@
         mkdir -pv root/{bin,etc/{nix,wnix,ssl/certs},proc,sys,dev,run,tmp,root}
 
         # Put statically linked busybox in /bin
-        #cp -av ${bb}/bin/busybox root/bin/busybox
-        #ln -sv busybox           root/bin/sh
-        #ln -sv busybox           root/bin/mount
-        #ln -sv busybox           root/bin/mknod
-        #ln -sv busybox           root/bin/mkdir
+        cp -av ${bb}/bin/busybox root/bin/busybox
+        ln -sv busybox           root/bin/sh
+        ln -sv busybox           root/bin/mount
+        ln -sv busybox           root/bin/mknod
+        ln -sv busybox           root/bin/mkdir
 
-        #ln -s ${nix}/bin/nix     root/bin/nix
-        #ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
+        ln -s ${nix}/bin/nix     root/bin/nix
+        ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
                    root/etc/ssl/certs/ca-bundle.crt
 
         # Reuse your config/registry/nixpkgs from rootfs
-        #cp -a ${rootfs}/etc/nix/nix.conf                root/etc/nix/nix.conf
-        #cp -a ${nixpkgs-src}/etc/wnix/nixpkgs           root/etc/wnix/nixpkgs
+        cp -a ${rootfs}/etc/nix/nix.conf                root/etc/nix/nix.conf
+        cp -a ${nixpkgs-src}/etc/wnix/nixpkgs           root/etc/wnix/nixpkgs
 
         rsync -v ${rootfs}/ root/
         chmod 1777 root/tmp
