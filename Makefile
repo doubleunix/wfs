@@ -15,4 +15,4 @@ docker:
 	$(NIX) build .#docker
 	docker load < result
 	rm result
-	docker run --rm -it -v nix:/nix $(PKG)
+	docker run --rm -it $(PKG)
