@@ -95,6 +95,16 @@
       trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
       EOF
 
+      # BusyBox programs we need to call from init
+      ln -s busybox $out/bin/udhcpc
+      ln -s busybox $out/bin/ifconfig
+      ln -s busybox $out/bin/route
+
+      # udhcpc writes a pidfile under /var/run by default
+      mkdir -p $out/{var,run}
+      ln -s $out/run $out/var/run
+
+
     '';
 
     # Bring /nix/store for nix (and friends) into the root (works offline)
@@ -131,14 +141,20 @@
       mount -t devpts   devpts   /dev/pts
       mount -t tmpfs    tmpfs    /dev/shm
 
-      # Load a likely NIC driver, then DHCP once
+      # Load likely NIC drivers (you already copied modules in)
       for m in e1000 e1000e virtio_pci virtio_net; do
         /bin/modprobe "$m" 2>/dev/null || true
       done
+
+      # Pick first non-lo iface; fall back to eth0 explicitly
       IFACE="$(ls /sys/class/net | grep -v '^lo$' | head -n1 || true)"
-      if [ -n "$IFACE" ]; then
-        /bin/udhcpc -i "$IFACE" -q -t 5 -T 3 -s /usr/share/udhcpc/default.script || true
-      fi
+      [ -z "$IFACE" ] && IFACE="eth0"
+
+      # Ensure the link is up before DHCP
+      /bin/ifconfig "$IFACE" up || true
+
+      # One-shot DHCP; this writes /etc/resolv.conf via your default.script
+      /bin/udhcpc -i "$IFACE" -q -t 5 -T 3 -s /usr/share/udhcpc/default.script || true
 
       echo "Wnix is alive!"
       exec /bin/sh
@@ -240,6 +256,7 @@
               -m 1024 -nographic \
               -cdrom ${iso} \
               -nic user,model=e1000 \
+              -append "console=ttyS0 ip=dhcp" \
               -boot d
           '';
         });
