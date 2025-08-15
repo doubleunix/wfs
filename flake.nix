@@ -35,6 +35,8 @@
       # certs + tiny config
       ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
 
+      cp -a ${./root/bin/wnix} $out/bin/wnix
+
       cat > $out/etc/os-release <<'EOF'
       ID=wnix
       NAME="WNIX"
@@ -63,7 +65,9 @@
     nixStore = pkgs.runCommand "wnix-nixstore" { } ''
       set -euo pipefail
       mkdir -p $out/nix/store
-      while IFS= read -r p; do cp -a "$p" $out/nix/store/; done < ${nixClosure}/store-paths
+      while IFS= read -r p; do
+        cp -a "$p" $out/nix/store/
+      done < ${nixClosure}/store-paths
     '';
 
     # Single source of truth for all targets
@@ -76,9 +80,9 @@
     stage1Init = pkgs.writeShellScript "init" ''
       set -euo pipefail
       export PATH=/bin
+      /bin/busybox --install -s /bin || true
       # Ensure mount points exist *before* mounting (fixes ENOENT)
       mkdir -p /proc /sys /dev /dev/pts /dev/shm /run
-      /bin/busybox --install -s /bin || true
 
       mount -t proc     proc     /proc
       mount -t sysfs    sysfs    /sys
