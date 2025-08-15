@@ -1,4 +1,1 @@
-DEFAULT_HOSTNAME=nixos
-ID=nixos
-NAME=NixOS
-VENDOR_NAME=NixOS
+ID=wnix

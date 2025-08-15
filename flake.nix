@@ -9,14 +9,18 @@
 
     system = "x86_64-linux";
     pkgs   = import nixpkgs { inherit system; };
+    lib    = nixpkgs.lib;
 
     bb  = pkgs.pkgsStatic.busybox;
+    bash   = pkgs.bash;
+    nix    = pkgs.nix;
+    cacert = pkgs.cacert;
 
     # Build a tiny rootfs from repo files + two symlinks in /bin
-    rootfs = with pkgs; pkgs.runCommand "wnix-rootfs" { } ''
-      set -eu
+    rootfs = pkgs.runCommand "wnix-rootfs" { } ''
+      set -euo pipefail
       mkdir -p $out/bin $out/tmp $out/etc/nix $out/etc/wnix $out/etc/ssl/certs
-      #ln -s ${bb}/bin/busybox                       $out/bin/sh
+      #ln -s ${bb}/bin/busybox                      $out/bin/sh
       ln -s ${bb}/bin/busybox                       $out/bin/ls
       ln -s ${bb}/bin/busybox                       $out/bin/cat
       ln -s ${bash}/bin/bash                        $out/bin/sh
@@ -35,29 +39,179 @@
       name = "extra";
       paths = with pkgs; [
       ];
-      # pathsToLink = [ "/bin" ];
     };
+
+    # *** Pin nixpkgs in-image WITHOUT installing anything ***
+    # This just drops a symlink in /etc/wnix/.pin -> /nix/store/...-source,
+    # which causes dockerTools to include the nixpkgs store path in the image.
+    pin-nixpkgs = pkgs.runCommand "pin-nixpkgs" { } ''
+      set -euo pipefail
+      mkdir -p $out/etc/wnix/.pin
+      ln -s ${nixpkgs.outPath} $out/etc/wnix/.pin/nixpkgs
+    '';
+
+    nixpkgs-src = pkgs.runCommand "nixpkgs-src" {} ''
+      set -euo pipefail
+      mkdir -p $out/etc/wnix
+      cp -a ${nixpkgs.outPath} $out/etc/wnix/nixpkgs
+    '';
+
+    # System registry: nixpkgs -> /etc/wnix/nixpkgs (NOT /nix/store)
+    pinned-registry = pkgs.writeTextFile {
+      name = "registry.json";
+      destination = "/etc/nix/registry.json";
+      text = builtins.toJSON {
+        version = 2;
+        flakes = [{
+          from = { type = "indirect"; id = "nixpkgs"; };
+          to   = { type = "path"; path = "/etc/wnix/nixpkgs"; };
+          # If /etc/wnix/nixpkgs is NOT a flake, add:
+          # to.flake = false;
+        }];
+      };
+    };
+
+    # ---------------------------
+    # QEMU: kernel + initramfs
+    # ---------------------------
+    kernel = pkgs.linuxPackages_latest.kernel;
+
+    initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
+      { buildInputs = with pkgs; [ cpio gzip ]; }
+      ''
+        set -eu
+        mkdir -p root/{bin,etc/nix,etc/wnix,proc,sys,dev,run,tmp,root}
+        chmod 1777 root/tmp
+
+        # Minimal tools
+        ln -s ${bb}/bin/busybox             root/bin/busybox
+        ln -s /bin/busybox                  root/bin/sh
+        ln -s ${pkgs.nix}/bin/nix           root/bin/nix
+        mkdir -p root/etc/ssl/certs
+        ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt root/etc/ssl/certs/ca-bundle.crt
+
+        # Reuse your config/registry/nixpkgs from rootfs
+        cp -a ${rootfs}/etc/nix/nix.conf           root/etc/nix/nix.conf
+        cp -a ${pinned-registry}/etc/nix/registry.json root/etc/nix/registry.json
+        cp -a ${nixpkgs-src}/etc/wnix/nixpkgs      root/etc/wnix/nixpkgs
+
+        # Minimal init: mount basics, seed /dev, tmpfs /nix, then shell
+        cat > root/init <<"SH"
+        #!/bin/sh
+        set -eu
+        mount -t proc proc /proc
+        mount -t sysfs sysfs /sys
+        mount -t tmpfs tmpfs /run
+        mount -t tmpfs tmpfs /nix -o mode=755,exec
+        mkdir -p /dev/pts /dev/shm
+        mount -t devpts devpts /dev/pts
+        mount -t tmpfs tmpfs /dev/shm
+        [ -c /dev/null ]   || mknod -m 666 /dev/null c 1 3
+        [ -c /dev/zero ]   || mknod -m 666 /dev/zero c 1 5
+        [ -c /dev/tty ]    || mknod -m 666 /dev/tty c 5 0
+        [ -c /dev/random ] || mknod -m 666 /dev/random c 1 8
+        [ -c /dev/urandom ]|| mknod -m 666 /dev/urandom c 1 9
+        export HOME=/root PATH=/bin:/root/.nix-profile/bin NIX_CONF_DIR=/etc/nix NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt
+        echo "WNIX init: ready"
+        exec /bin/sh
+        SH
+        chmod +x root/init
+
+        (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
+      '';
+
+    # ---------------------------
+    # BIOS-bootable ISO (isolinux)
+    # ---------------------------
+    iso = pkgs.runCommand "wnix.iso"
+      { buildInputs = with pkgs; [ xorriso syslinux ]; }
+      ''
+        set -eu
+        mkdir -p iso/isolinux iso/boot
+
+        # isolinux (BIOS)
+        cp ${pkgs.syslinux}/share/syslinux/isolinux.bin iso/isolinux/
+        cp ${pkgs.syslinux}/share/syslinux/ldlinux.c32  iso/isolinux/
+        cat > iso/isolinux/isolinux.cfg <<'CFG'
+        DEFAULT wnix
+        PROMPT 0
+        TIMEOUT 20
+        LABEL wnix
+          KERNEL /boot/bzImage
+          APPEND initrd=/boot/initramfs.cpio.gz console=ttyS0
+        CFG
+
+        # Kernel + initramfs
+        cp ${kernel}/bzImage     iso/boot/bzImage
+        cp ${initramfs}          iso/boot/initramfs.cpio.gz
+
+        # Create hybrid ISO (BIOS boot)
+        xorriso -as mkisofs \
+          -iso-level 3 -full-iso9660-filenames \
+          -volid WNIX \
+          -eltorito-boot isolinux/isolinux.bin \
+          -eltorito-catalog isolinux/boot.cat \
+          -no-emul-boot -boot-load-size 4 -boot-info-table \
+          -isohybrid-mbr ${pkgs.syslinux}/share/syslinux/isohdpfx.bin \
+          -output $out \
+          iso
+      '';
 
   in {
 
-    packages.${system}.default = pkgs.dockerTools.buildImage {
-      name = "wnix";
-      tag  = "latest";
+    packages.${system} = {
 
-      copyToRoot = [
-        rootfs
-        extra
-      ];
-
-      config = {
-        Entrypoint = [ "/bin/sh" ];
-        WorkingDir = "/";
-        Env = [
-          "PATH=/bin:/.nix-profile/bin"
-          "NIX_CONF_DIR=/etc/nix"
-          "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+      default = pkgs.dockerTools.buildImage {
+        name = "wnix";
+        tag  = "latest";
+        copyToRoot = [
+          rootfs
+          extra
+          pin-nixpkgs
+          nixpkgs-src
+          pinned-registry
         ];
-        Volumes = { "/nix" = {}; };
+        config = {
+          Entrypoint = [ "/bin/sh" ];
+          WorkingDir = "/";
+          Env = [
+            "HOME=/root"
+            "PATH=/bin:/root/.nix-profile/bin"
+            "NIX_CONF_DIR=/etc/nix"
+            "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+          ];
+        };
+      };
+
+      # Added buildable artifacts:
+      kernel    = kernel;
+      initramfs = initramfs;
+      iso       = iso;
+
+    };
+
+    # Convenience launchers
+    apps.${system} = {
+
+      runQemuInitrd = {
+        type = "app";
+        program = lib.getExe (pkgs.writeShellScript "run-qemu-initrd" ''
+          exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
+            -m 1024 -nographic \
+            -kernel ${kernel}/bzImage \
+            -initrd ${initramfs} \
+            -append "console=ttyS0"
+        '');
+      };
+
+      runQemuIso = {
+        type = "app";
+        program = lib.getExe (pkgs.writeShellScript "run-qemu-iso" ''
+          exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
+            -m 1024 -nographic \
+            -cdrom ${iso} \
+            -boot d
+        '');
       };
     };
   };
