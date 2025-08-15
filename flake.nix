@@ -23,7 +23,7 @@
     };
 
     # Full runtime closure for nix so it runs in ISO/initramfs (offline)
-    nixClosure = pkgs.closureInfo { rootPaths = [ nix ]; };
+    nixClosure = pkgs.closureInfo { rootPaths = [ pkgs.nix pkgs.dhcpcd ]; };
 
     udhcpcScript = pkgs.writeScript "udhcpc.default.script" ''
       #!/bin/sh
@@ -101,8 +101,9 @@
       ln -s busybox $out/bin/route
 
       # udhcpc writes a pidfile under /var/run by default
+      ln -s ${pkgs.dhcpcd}/bin/dhcpcd $out/bin/dhcpcd
       mkdir -p $out/{var,run}
-      ln -s $out/run $out/var/run
+      ln -s ../run $out/var/run
 
 
     '';
@@ -141,20 +142,15 @@
       mount -t devpts   devpts   /dev/pts
       mount -t tmpfs    tmpfs    /dev/shm
 
-      # Load likely NIC drivers (you already copied modules in)
-      for m in e1000 e1000e virtio_pci virtio_net; do
-        /bin/modprobe "$m" 2>/dev/null || true
-      done
+      # load likely NIC modules (you already copy them)
+      for m in e1000 e1000e virtio_pci virtio_net; do /bin/modprobe "$m" 2>/dev/null || true; done
 
-      # Pick first non-lo iface; fall back to eth0 explicitly
-      IFACE="$(ls /sys/class/net | grep -v '^lo$' | head -n1 || true)"
-      [ -z "$IFACE" ] && IFACE="eth0"
-
-      # Ensure the link is up before DHCP
+      # pick an interface (or fall back to eth0) and bring it up
+      IFACE="$(ls /sys/class/net | grep -v '^lo$' | head -n1 || true)"; [ -z "$IFACE" ] && IFACE="eth0"
       /bin/ifconfig "$IFACE" up || true
 
-      # One-shot DHCP; this writes /etc/resolv.conf via your default.script
-      /bin/udhcpc -i "$IFACE" -q -t 5 -T 3 -s /usr/share/udhcpc/default.script || true
+      # one-shot IPv4 DHCP; waits for a lease, writes routes and /etc/resolv.conf
+      /bin/dhcpcd -w -q "$IFACE" || true
 
       echo "Wnix is alive!"
       exec /bin/sh
@@ -255,6 +251,8 @@
             exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
               -m 1024 -nographic \
               -cdrom ${iso} \
+              -kernel ${kernel}/bzImage \
+              -initrd ${initramfs} \
               -nic user,model=e1000 \
               -append "console=ttyS0 ip=dhcp" \
               -boot d
