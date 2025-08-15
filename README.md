@@ -6,6 +6,12 @@ Double Unix
 
 make
 
-## run
+## usage
 
-make run
+Once you're inside, type:
+
+```sh
+wnix install cowsay lolcat
+
+cowsay 'Hello wnix!' | lolcat -a
+```
