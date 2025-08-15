@@ -20,7 +20,7 @@
     rootfs = pkgs.stdenvNoCC.mkDerivation {
       name = "wnix-rootfs";
       dontUnpack = true;
-      nativeBuildInputs = [ pkgs.coreutils ];
+      nativeBuildInputs = [ busybox ];
       installPhase = ''
         set -euo pipefail
         mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp} $out/nix/store
@@ -45,8 +45,13 @@
         NAME="WNIX"
         EOF
 
-        printf 'root:x:0:0:Root:/root:/bin/sh\n' > $out/etc/passwd
-        printf 'root:x:0:\n' > $out/etc/group
+        cat > $out/etc/passwd << 'EOF
+        root:x:0:0:Root:/root:/bin/sh
+        EOF
+
+        cat > $out/etc/group << 'EOF
+        root:x:0:
+        EOF
 
         cat > $out/etc/nix/nix.conf <<'EOF'
         experimental-features = nix-command flakes
@@ -58,9 +63,12 @@
         EOF
 
         # /init (PID 1)
-        install -Dm0755 /dev/stdin $out/init <<'EOF'
+        cat > $out/init <<'EOF'
         #!/bin/sh
-        set -eu
+        #set -eu
+
+        export PATH=/bin
+        # /bin/busybox --install -s /bin
 
         # early /dev (belt & suspenders)
         mknod -m 666 /dev/null    c 1 3 || true
@@ -86,6 +94,7 @@
         echo "Wnix is alive!"
         exec /bin/sh
         EOF
+        chmod +x $out/init
 
         # Offline Nix runtime closure inside rootfs (for ISO/initramfs)
         while IFS= read -r p; do
@@ -191,7 +200,6 @@
               -m 1024 -nographic \
               -cdrom ${iso} \
               -boot d \
-              -append "console=ttyS0" \
               -nic user,model=virtio-net-pci
           '';
         });
