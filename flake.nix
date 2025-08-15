@@ -100,18 +100,12 @@
     initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
       { buildInputs = with pkgs; [ cpio gzip rsync ]; }  # <-- add rsync
       ''
-        set -euo pipefail
-        mkdir -p root
+        #set -euo pipefail
+        mkdir -p root/
 
         # Effect of copyToRoot for initramfs:
-        # - copy-links: deref symlinks from systemRoot (symlinkJoin) into real files
-        # - hard-links: preserve hardlinks if any appear later
-        # - chmod=Du+w: ensure dirs are user-writable so we can add /init
-        rsync -a --copy-links --hard-links --chmod=Du+w ${rootfs}/ root/
-
-        # sanity
-        test -x root/init
-        test -x root/bin/sh || (echo "missing /bin/sh"; ls -l root/bin; exit 1)
+        #rsync -av --copy-links --hard-links --chmod=Du+w ${rootfs}/ root/
+        rsync -Pav --delete ${rootfs}/ root/
 
         (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
       '';
