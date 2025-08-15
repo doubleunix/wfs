@@ -1,5 +1,5 @@
 {
-  description = "Wnix";
+  description = "Tiny LFS-style OS (shared root for Docker + ISO/QEMU)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -10,111 +10,108 @@
     lib    = nixpkgs.lib;
 
     busybox = pkgs.pkgsStatic.busybox;
+    bash    = pkgs.pkgsStatic.bash;
     nix     = pkgs.nix;
     cacert  = pkgs.cacert;
     kernel  = pkgs.linuxPackages_latest.kernel;
 
-    # Full runtime closure for nix so it runs in ISO/initramfs (offline)
     nixClosure = pkgs.closureInfo { rootPaths = [ nix ]; };
 
-    # -------- minimal root at / --------
-    rootfs = pkgs.runCommand "wnix-rootfs" { } ''
-      set -euo pipefail
-      mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp}
-      chmod 1777 $out/tmp
+    # ---------------------- ROOTFS (assembled via mkDerivation) ----------------------
+    rootfs = pkgs.stdenvNoCC.mkDerivation {
+      name = "wnix-rootfs";
+      dontUnpack = true;
+      dontFixup = true;
+      dontPatchShebangs = true;
+      nativeBuildInputs = [ ];
+      installPhase = ''
+        set -euo pipefail
+        mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp,nix/store}
+        chmod 1777 $out/tmp
 
-      # Shell + a couple of applets (we'll "install" the rest at boot)
-      #cp -a ${busybox}/bin/busybox  $out/bin/busybox
-      #ln -s busybox                 $out/bin/ls
-      #ln -s busybox                 $out/bin/cat
-      #ln -s busybox                 $out/bin/sh
+        ln -s ${nix}/bin/nix $out/bin/nix
+        ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
 
-      ln -s ${nix}/bin/nix           $out/bin/nix
+        cp -v ${busybox}/bin/busybox $out/bin/busybox
+        ln -sf busybox $out/bin/sh
+        $out/bin/busybox --install -s $out/bin
 
-      ${busybox}/bin/busybox --install -s $out/bin
+        cat > $out/etc/os-release <<'EOF'
+        ID=wnix
+        NAME="WNIX"
+        EOF
 
-      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
-                 $out/etc/ssl/certs/ca-bundle.crt
+        cat > $out/etc/passwd << 'EOF'
+        root:x:0:0:Root:/root:/bin/sh
+        EOF
 
-      cp -a ${./root/bin/wnix} $out/bin/wnix
+        cat > $out/etc/group << 'EOF'
+        root:x:0:
+        EOF
 
-      cat > $out/etc/os-release <<'EOF'
-      ID=wnix
-      NAME="WNIX"
-      EOF
+        cat > $out/etc/nix/nix.conf <<'EOF'
+        experimental-features = nix-command flakes
+        accept-flake-config = true
+        build-users-group =
+        ssl-cert-file = /etc/ssl/certs/ca-bundle.crt
+        substituters = https://cache.nixos.org
+        trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+        EOF
 
-      cat > $out/etc/passwd << 'EOF'
-      root:x:0:0:Root:/root:/bin/sh
-      EOF
+        cat > $out/init <<'EOF'
+        #!/bin/sh
+        export PATH=/bin
+        export HOME=/root
 
-      cat > $out/etc/group << 'EOF'
-      root:x:0:
-      EOF
+        mknod -m 666 /dev/null    c 1 3
+        mknod -m 622 /dev/console c 5 1
+        mknod -m 666 /dev/tty     c 5 0
 
-      cat > $out/etc/nix/nix.conf <<'EOF'
-      experimental-features = nix-command flakes
-      accept-flake-config = true
-      build-users-group =
-      ssl-cert-file = /etc/ssl/certs/ca-bundle.crt
-      substituters = https://cache.nixos.org
-      trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-      EOF
+        mkdir -p /proc /sys /dev /run /root
+        mount -t proc     proc     /proc
+        mount -t sysfs    sysfs    /sys
+        mount -t tmpfs    tmpfs    /run
+        mount -t devtmpfs devtmpfs /dev
 
-    '';
+        mkdir -p /dev/{shm,pts}
+        mount -t devpts   devpts   /dev/pts
+        mount -t tmpfs    tmpfs    /dev/shm
 
-    # Bring /nix/store for nix (and friends) into the root (works offline)
-    nixStore = pkgs.runCommand "wnix-nixstore" { } ''
-      set -euo pipefail
-      mkdir -p $out/nix/store
-      while IFS= read -r p; do
-        cp -a "$p" $out/nix/store/
-      done < ${nixClosure}/store-paths
-    '';
-
-    # Single source of truth for all targets
-    systemRoot = pkgs.symlinkJoin {
-      name  = "wnix-system-root";
-      paths = [ rootfs nixStore ];
+        echo "Wnix is alive!"
+        exec /bin/sh
+        EOF
+        chmod +x $out/init
+      '';
     };
 
-    # -------- tiny, target-agnostic /init (no ISO-specific logic here) -------
-    stage1Init = pkgs.writeShellScript "init" ''
-      set -euo pipefail
-      export PATH=/bin
-      export HOME=/root
-      mkdir -p /proc /sys /dev /run /root
-
-      mount -t proc     proc     /proc
-      mount -t sysfs    sysfs    /sys
-      mount -t tmpfs    tmpfs    /run
-      mount -t devtmpfs devtmpfs /dev
-
-      mkdir -p /dev/{pts,shm}
-      mount -t devpts   devpts   /dev/pts
-      mount -t tmpfs    tmpfs    /dev/shm
-
-      echo "Wnix is alive!"
-      exec /bin/sh
-    '';
-
-    # -------- initramfs: same root as Docker, but with symlinks resolved -----
-    initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
-      { buildInputs = with pkgs; [ cpio gzip rsync coreutils ]; }
-      ''
+    # ------------------------- INITRAMFS (cpio.gz of rootfs) -------------------------
+    initramfs = pkgs.stdenvNoCC.mkDerivation {
+      name = "wnix-initramfs.cpio.gz";
+      dontUnpack = true;
+      dontFixup = true;
+      dontPatchShebangs = true;
+      nativeBuildInputs = with pkgs; [ cpio rsync coreutils ];
+      installPhase = ''
         set -euo pipefail
-        mkdir -p root
-        rsync -a --copy-links --chmod=Du+w ${systemRoot}/ root/
-        install -Dm0755 ${stage1Init} root/init
+        mkdir root
+        rsync -aHL --numeric-ids ${rootfs}/ root/
+        chmod -R u+w root/
+        test -x root/init
         test -x root/bin/sh
         test -x root/bin/busybox
         test -e root/nix/store
-        (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
+        (cd root; find . -print0 | cpio --null -ov --format=newc) > $out
       '';
+    };
 
-    # -------- BIOS-bootable ISO (boots kernel + the initramfs above) ---------
-    iso = pkgs.runCommand "wnix.iso"
-      { buildInputs = with pkgs; [ xorriso syslinux ]; }
-      ''
+    # ------------------------------ BIOS/ISO image -----------------------------------
+    iso = pkgs.stdenvNoCC.mkDerivation {
+      name = "wnix.iso";
+      dontUnpack = true;
+      dontFixup = true;
+      dontPatchShebangs = true;
+      nativeBuildInputs = with pkgs; [ xorriso syslinux ];
+      installPhase = ''
         set -euo pipefail
         mkdir -p iso/isolinux iso/boot
         cp ${pkgs.syslinux}/share/syslinux/isolinux.bin iso/isolinux/
@@ -123,12 +120,14 @@
         DEFAULT wnix
         PROMPT 0
         TIMEOUT 20
+
         LABEL wnix
-          KERNEL /boot/bzImage
-          APPEND initrd=/boot/initramfs.cpio.gz console=ttyS0
+          LINUX /boot/bzImage
+          INITRD /boot/initramfs.cpio
+          APPEND console=ttyS0 rdinit=/init
         CFG
-        cp ${kernel}/bzImage            iso/boot/bzImage
-        cp ${initramfs}                 iso/boot/initramfs.cpio.gz
+        cp ${kernel}/bzImage  iso/boot/bzImage
+        cp ${initramfs}       iso/boot/initramfs.cpio
         xorriso -as mkisofs \
           -iso-level 3 -full-iso9660-filenames \
           -volid WNIX \
@@ -138,13 +137,19 @@
           -isohybrid-mbr ${pkgs.syslinux}/share/syslinux/isohdpfx.bin \
           -output $out iso
       '';
-  in
-  {
+    };
+
+  in {
     packages.${system} = {
+      root      = rootfs;
+      kernel    = kernel;
+      initramfs = initramfs;
+      iso       = iso;
+
       docker = pkgs.dockerTools.buildImage {
         name = "wnix";
         tag  = "latest";
-        copyToRoot = [ systemRoot ];
+        copyToRoot = [ rootfs ];
         config = {
           Entrypoint = [ "/bin/sh" ];
           WorkingDir = "/";
@@ -156,11 +161,6 @@
           ];
         };
       };
-
-      root      = systemRoot;
-      kernel    = kernel;
-      initramfs = initramfs;
-      iso       = iso;
     };
 
     apps.${system} = {
@@ -173,7 +173,8 @@
               -m 1024 -nographic \
               -kernel ${kernel}/bzImage \
               -initrd ${initramfs} \
-              -append "console=ttyS0"
+              -append "console=ttyS0 rdinit=/init" \
+              -nic user,model=virtio-net-pci
           '';
         });
       };
@@ -185,7 +186,8 @@
             exec ${pkgs.qemu_kvm}/bin/qemu-system-x86_64 \
               -m 1024 -nographic \
               -cdrom ${iso} \
-              -boot d
+              -boot d \
+              -nic user,model=virtio-net-pci
           '';
         });
       };
