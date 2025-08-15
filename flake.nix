@@ -16,6 +16,9 @@
     nix    = pkgs.nix;
     cacert = pkgs.cacert;
 
+    # Full runtime closure for nix (so nix works offline in ISO/initramfs)
+    nixClosure = pkgs.closureInfo { rootPaths = [ nix ]; };
+
     nixpkgs-src = pkgs.runCommand "nixpkgs-src" {} ''
       set -euo pipefail
       mkdir -p $out/etc/wnix
@@ -78,10 +81,18 @@
 
     '';
 
-    # Single tree to reuse everywhere (cheap union; easy to extend later)
+    # Put nix's closure under /nix/store (works in ISO/initramfs; in Docker it’ll be
+    # hidden by your volume mount, which is fine and desired).
+    nixStore = pkgs.runCommand "wnix-nixstore" { } ''
+      set -euo pipefail
+      mkdir -p $out/nix/store
+      while IFS= read -r p; do cp -a "$p" $out/nix/store/; done < ${nixClosure}/store-paths
+    '';
+
+    # Single shared root for all targets
     systemRoot = pkgs.symlinkJoin {
       name  = "wnix-system-root";
-      paths = [ rootfs ];
+      paths = [ rootfs nixStore ];
     };
 
     # shared stage-1 /init
@@ -115,8 +126,9 @@
 
         (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
       '';
+
     initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
-      { buildInputs = with pkgs; [ cpio gzip rsync nix ]; }
+      { buildInputs = with pkgs; [ cpio gzip rsync nix nixStore ]; }
       ''
         set -euo pipefail
         mkdir -pv root/{bin,etc/{nix,wnix,ssl/certs},proc,sys,dev,run,tmp,root}
@@ -196,7 +208,7 @@
       docker = pkgs.dockerTools.buildImage {
         name = "wnix";
         tag  = "latest";
-        copyToRoot = [ rootfs ];
+        copyToRoot = [ rootfs nixStore ];
         config = {
           Entrypoint = [ "/bin/sh" ];
           WorkingDir = "/";
