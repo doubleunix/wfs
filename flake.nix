@@ -16,6 +16,12 @@
     nix    = pkgs.nix;
     cacert = pkgs.cacert;
 
+    nixpkgs-src = pkgs.runCommand "nixpkgs-src" {} ''
+      set -euo pipefail
+      mkdir -p $out/etc/wnix
+      cp -a ${nixpkgs.outPath} $out/etc/wnix/nixpkgs
+    '';
+
     # --- Minimal root filesystem (copyToRoot payload) ---
     rootfs = pkgs.runCommand "wnix-rootfs" { } ''
       set -euo pipefail
@@ -97,7 +103,7 @@
 
     # Initramfs that contains EXACTLY the same / as Docker's copyToRoot
 
-    initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
+    initramfs_new = pkgs.runCommand "wnix-initramfs.cpio.gz"
       { buildInputs = with pkgs; [ cpio gzip rsync ]; }  # <-- add rsync
       ''
         #set -euo pipefail
@@ -106,6 +112,51 @@
         # Effect of copyToRoot for initramfs:
         #rsync -av --copy-links --hard-links --chmod=Du+w ${rootfs}/ root/
         rsync -Pav --delete ${rootfs}/ root/
+
+        (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
+      '';
+    initramfs = pkgs.runCommand "wnix-initramfs.cpio.gz"
+      { buildInputs = with pkgs; [ cpio gzip rsync nix ]; }
+      ''
+        set -euo pipefail
+        mkdir -pv root/{bin,etc/{nix,wnix,ssl/certs},proc,sys,dev,run,tmp,root}
+
+        # Put statically linked busybox in /bin
+        #cp -av ${bb}/bin/busybox root/bin/busybox
+        #ln -sv busybox           root/bin/sh
+        #ln -sv busybox           root/bin/mount
+        #ln -sv busybox           root/bin/mknod
+        #ln -sv busybox           root/bin/mkdir
+
+        #ln -s ${nix}/bin/nix     root/bin/nix
+        #ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
+                   root/etc/ssl/certs/ca-bundle.crt
+
+        # Reuse your config/registry/nixpkgs from rootfs
+        #cp -a ${rootfs}/etc/nix/nix.conf                root/etc/nix/nix.conf
+        #cp -a ${nixpkgs-src}/etc/wnix/nixpkgs           root/etc/wnix/nixpkgs
+
+        rsync -v ${rootfs}/ root/
+        chmod 1777 root/tmp
+
+        cat > root/init <<"SH"
+        #!/bin/sh
+        set -euo pipefail
+        mount -t proc proc /proc
+        mount -t sysfs sysfs /sys
+        mkdir -p /dev/pts /dev/shm
+        mount -t devpts devpts /dev/pts
+        mount -t tmpfs tmpfs /dev/shm
+        # devices
+        mknod -m 666 /dev/null      c 1 3
+        mknod -m 666 /dev/zero      c 1 5
+        mknod -m 666 /dev/tty       c 5 0
+        mknod -m 666 /dev/random    c 1 8
+        mknod -m 666 /dev/urandom   c 1 9
+        echo "Wnix is alive!"
+        exec /bin/sh
+        SH
+        chmod +x root/init
 
         (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
       '';
