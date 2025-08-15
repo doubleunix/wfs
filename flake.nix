@@ -15,6 +15,12 @@
     cacert = pkgs.cacert;
     kernel = pkgs.linuxPackages_latest.kernel;
 
+    # Add the NIC modules we’ll need
+    netModules = pkgs.makeModulesClosure {
+      rootModules = [ "e1000" "e1000e" "virtio_pci" "virtio_net" ];
+      kernel = kernel;
+    };
+
     # Full runtime closure for nix so it runs in ISO/initramfs (offline)
     nixClosure = pkgs.closureInfo { rootPaths = [ nix ]; };
 
@@ -124,7 +130,10 @@
       mount -t devpts   devpts   /dev/pts
       mount -t tmpfs    tmpfs    /dev/shm
 
-      # One-shot DHCP on the first non-lo interface (writes /etc/resolv.conf)
+      # Load a likely NIC driver, then DHCP once
+      for m in e1000 e1000e virtio_pci virtio_net; do
+        /bin/modprobe "$m" 2>/dev/null || true
+      done
       IFACE="$(ls /sys/class/net | grep -v '^lo$' | head -n1 || true)"
       if [ -n "$IFACE" ]; then
         /bin/udhcpc -i "$IFACE" -q -t 5 -T 3 -s /usr/share/udhcpc/default.script || true
@@ -142,6 +151,10 @@
         mkdir -p root
         # Deref symlinks from systemRoot so binaries are *real* files in RAM.
         rsync -a --copy-links --chmod=Du+w ${systemRoot}/ root/
+
+        mkdir -p root/lib
+        cp -a ${netModules}/lib/modules root/lib/
+
         install -Dm0755 ${stage1Init} root/init
         # sanity
         test -x root/bin/sh
