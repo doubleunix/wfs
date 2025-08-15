@@ -11,6 +11,8 @@
 
     # Core payload we want at / in every target
     bb     = pkgs.pkgsStatic.busybox;
+    bash   = pkgs.pkgsStatic.bash;
+    #nix    = pkgs.pkgsStatic.nix;  # Try this later! It was compiling and looked promising.
     nix    = pkgs.nix;
     cacert = pkgs.cacert;
 
@@ -22,8 +24,10 @@
 
       # BusyBox + /bin/sh, nix CLI
       cp -a ${bb}/bin/busybox   $out/bin/busybox
-      ln -s busybox             $out/bin/sh
-      ln -s ${nix}/bin/nix      $out/bin/nix
+      cp -a ${bash}/bin/bash    $out/bin/sh
+      cp -a ${nix}/bin/nix      $out/bin/nix
+      ln -s busybox             $out/bin/ls
+      ln -s busybox             $out/bin/cat
 
       # Your helper
       install -Dm0755 ${./root/bin/wnix} $out/bin/wnix
@@ -76,7 +80,7 @@
         # - copy-links: deref symlinks from systemRoot (symlinkJoin) into real files
         # - hard-links: preserve hardlinks if any appear later
         # - chmod=Du+w: ensure dirs are user-writable so we can add /init
-        rsync -a --copy-links --hard-links --chmod=Du+w ${systemRoot}/ root/
+        rsync -a --copy-links --hard-links --chmod=Du+w ${rootfs}/ root/
 
         install -Dm0755 ${stage1Init} root/init
 
@@ -122,7 +126,7 @@
       docker = pkgs.dockerTools.buildImage {
         name = "wnix";
         tag  = "latest";
-        copyToRoot = [ systemRoot ];
+        copyToRoot = [ rootfs ];
         config = {
           Entrypoint = [ "/bin/sh" ];
           WorkingDir = "/";
@@ -135,7 +139,7 @@
         };
       };
 
-      root      = systemRoot;  # handy for tar/partition installs
+      root      = rootfs;      # handy for tar/partition installs
       kernel    = kernel;
       initramfs = initramfs;   # contains systemRoot at /
       iso       = iso;         # boots kernel+initramfs
