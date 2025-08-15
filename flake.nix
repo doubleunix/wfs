@@ -78,15 +78,15 @@
       EOF
       # resolved stub resolver
       mkdir -p $out/etc
-      ln -s /run/systemd/resolve/stub-resolv.conf $out/etc/resolv.conf
+      cp -v /run/systemd/resolve/stub-resolv.conf $out/etc/resolv.conf
 
       # enable services (like `systemctl enable ...`)
       mkdir -p $out/etc/systemd/system/multi-user.target.wants
-      ln -s /lib/systemd/system/systemd-networkd.service \
+      cp -v /lib/systemd/system/systemd-networkd.service \
             $out/etc/systemd/system/multi-user.target.wants/systemd-networkd.service
-      ln -s /lib/systemd/system/systemd-resolved.service \
+      cp -v /lib/systemd/system/systemd-resolved.service \
             $out/etc/systemd/system/multi-user.target.wants/systemd-resolved.service
-      ln -s ${iwd}/lib/systemd/system/iwd.service \
+      cp -v ${iwd}/lib/systemd/system/iwd.service \
             $out/etc/systemd/system/multi-user.target.wants/iwd.service
 
       # required for systemd on first boot

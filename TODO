@@ -1,5 +1,0 @@
-# TODO
-
-- Add root/etc/bashrc to setup for container and iso
-- Refactor setup to share code between container and iso
-- Delete code, it's already too complex
