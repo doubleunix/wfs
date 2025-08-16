@@ -93,6 +93,8 @@
     initramfs = pkgs.stdenvNoCC.mkDerivation {
       name = "wnix-initramfs.cpio.gz";
       dontUnpack = true;
+      dontFixup = true;
+      dontPatchShebangs = true;
       nativeBuildInputs = with pkgs; [ cpio gzip rsync coreutils ];
       installPhase = ''
         set -euo pipefail
@@ -111,6 +113,8 @@
     iso = pkgs.stdenvNoCC.mkDerivation {
       name = "wnix.iso";
       dontUnpack = true;
+      dontFixup = true;
+      dontPatchShebangs = true;
       nativeBuildInputs = with pkgs; [ xorriso syslinux ];
       installPhase = ''
         set -euo pipefail
