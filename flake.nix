@@ -23,12 +23,15 @@
       nativeBuildInputs = [ busybox ];
       installPhase = ''
         set -euo pipefail
-        mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp,nix/store}
+        mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp} $out/nix/store
         chmod 1777 $out/tmp
 
-        cp ${busybox}/bin/busybox $out/bin/busybox
+        # BusyBox + applets
+        cp -a ${busybox}/bin/busybox $out/bin/busybox
         ${busybox}/bin/busybox --install -s $out/bin
         ln -sf busybox $out/bin/sh
+
+        # Nix + CA bundle (for HTTPS)
         ln -s ${nix}/bin/nix $out/bin/nix
         ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
 
@@ -54,6 +57,7 @@
         trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
         EOF
 
+        # /init (PID 1)
         cat > $out/init <<'EOF'
         #!/bin/sh
 
@@ -74,10 +78,10 @@
         mount -t tmpfs    tmpfs    /dev/shm
 
         # Simple DHCP on eth0 (QEMU -nic user provides DHCP)
-        ip link set dev eth0 up 2>/dev/null || true
-        if command -v udhcpc >/dev/null; then
-          udhcpc -i eth0 -t 10 -T 3 || true
-        fi
+        # ip link set dev eth0 up 2>/dev/null || true
+        # if command -v udhcpc >/dev/null; then
+        #   udhcpc -i eth0 -t 10 -T 3 || true
+        # fi
 
         echo "Wnix is alive!"
         exec /bin/sh
@@ -85,9 +89,9 @@
         chmod +x $out/init
 
         # Offline Nix runtime closure inside rootfs (for ISO/initramfs)
-        while IFS= read -r p; do
-          cp "$p" $out/nix/store/
-        done < ${nixClosure}/store-paths
+        #while IFS= read -r p; do
+        #  cp -a "$p" $out/nix/store/
+        #done < ${nixClosure}/store-paths
       '';
     };
 
@@ -95,12 +99,12 @@
     initramfs = pkgs.stdenvNoCC.mkDerivation {
       name = "wnix-initramfs.cpio.gz";
       dontUnpack = true;
-      nativeBuildInputs = with pkgs; [ cpio gzip rsync coreutils ];
+      nativeBuildInputs = [ pkgs.cpio pkgs.gzip pkgs.rsync pkgs.coreutils ];
       installPhase = ''
         set -euo pipefail
         mkdir root
-        rsync -av --delete ${rootfs}/ root/
-        chmod -R u+w /root/
+        # keep ownership numeric and hardlinks; add -L if you *want* to flatten symlinks
+        rsync -aH --numeric-ids ${rootfs}/ root/
         test -x root/init
         test -x root/bin/sh
         test -x root/bin/busybox
@@ -113,7 +117,7 @@
     iso = pkgs.stdenvNoCC.mkDerivation {
       name = "wnix.iso";
       dontUnpack = true;
-      nativeBuildInputs = with pkgs; [ xorriso syslinux ];
+      nativeBuildInputs = [ pkgs.xorriso pkgs.syslinux ];
       installPhase = ''
         set -euo pipefail
         mkdir -p iso/isolinux iso/boot
