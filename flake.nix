@@ -95,7 +95,7 @@
       dontUnpack = true;
       dontFixup = true;
       dontPatchShebangs = true;
-      nativeBuildInputs = with pkgs; [ cpio gzip rsync coreutils ];
+      nativeBuildInputs = with pkgs; [ cpio rsync coreutils ];
       installPhase = ''
         set -euo pipefail
         mkdir root
@@ -105,7 +105,7 @@
         test -x root/bin/sh
         test -x root/bin/busybox
         test -e root/nix/store
-        (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
+        (cd root; find . -print0 | cpio --null -ov --format=newc) > $out
       '';
     };
 
