@@ -84,6 +84,11 @@
       '';
     };
 
+    systemRoot = pkgs.symlinkJoin {
+      name = "wnix-system-root";
+      paths = [ rootfs ];
+    };
+
     # ------------------------- INITRAMFS (cpio.gz of rootfs) -------------------------
     initramfs = pkgs.stdenvNoCC.mkDerivation {
       name = "wnix-initramfs.cpio.gz";
@@ -94,7 +99,7 @@
       installPhase = ''
         set -euo pipefail
         mkdir root
-        rsync -aHL --numeric-ids ${rootfs}/ root/
+        rsync -av ${systemRoot}/ root/
         chmod -R u+w root/
         test -x root/init
         test -x root/bin/sh
@@ -120,14 +125,12 @@
         DEFAULT wnix
         PROMPT 0
         TIMEOUT 20
-
         LABEL wnix
-          LINUX /boot/bzImage
-          INITRD /boot/initramfs.cpio
-          APPEND console=ttyS0 rdinit=/init
+          KERNEL /boot/bzImage
+          APPEND initrd=/boot/initramfs.cpio.gz console=ttyS0 rdinit=/init
         CFG
         cp ${kernel}/bzImage  iso/boot/bzImage
-        cp ${initramfs}       iso/boot/initramfs.cpio
+        cp ${initramfs}       iso/boot/initramfs.cpio.gz
         xorriso -as mkisofs \
           -iso-level 3 -full-iso9660-filenames \
           -volid WNIX \
