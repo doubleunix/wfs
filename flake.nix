@@ -10,7 +10,6 @@
     lib    = nixpkgs.lib;
 
     busybox = pkgs.pkgsStatic.busybox;
-    bash    = pkgs.pkgsStatic.bash;
     nix     = pkgs.nix;
     cacert  = pkgs.cacert;
     kernel  = pkgs.linuxPackages_latest.kernel;
@@ -27,8 +26,9 @@
         mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp,nix/store}
         chmod 1777 $out/tmp
 
-        cp -v ${busybox}/bin/busybox $out/bin/busybox
-        cp -v ${bash}/bin/bash $out/bin/sh
+        cp ${busybox}/bin/busybox $out/bin/busybox
+        ${busybox}/bin/busybox --install -s $out/bin
+        ln -sf busybox $out/bin/sh
         ln -s ${nix}/bin/nix $out/bin/nix
         ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
 
@@ -55,6 +55,8 @@
         EOF
 
         cat > $out/init <<'EOF'
+        #!/bin/sh
+
         export PATH=/bin
         export HOME=/root
 
@@ -62,26 +64,31 @@
         mknod -m 622 /dev/console c 5 1
         mknod -m 666 /dev/tty     c 5 0
 
-        mkdir -p /proc /sys /dev /run /root
+        mkdir -p /proc /sys /dev /run /root /dev/pts /dev/shm
+
         mount -t proc     proc     /proc
         mount -t sysfs    sysfs    /sys
         mount -t tmpfs    tmpfs    /run
-        mount -t devtmpfs devtmpfs /dev
-
-        mkdir -p /dev/{shm,pts}
+        mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
         mount -t devpts   devpts   /dev/pts
         mount -t tmpfs    tmpfs    /dev/shm
+
+        # Simple DHCP on eth0 (QEMU -nic user provides DHCP)
+        ip link set dev eth0 up 2>/dev/null || true
+        if command -v udhcpc >/dev/null; then
+          udhcpc -i eth0 -t 10 -T 3 || true
+        fi
 
         echo "Wnix is alive!"
         exec /bin/sh
         EOF
         chmod +x $out/init
-      '';
-    };
 
-    systemRoot = pkgs.symlinkJoin {
-      name = "wnix-system-root";
-      paths = [ rootfs ];
+        # Offline Nix runtime closure inside rootfs (for ISO/initramfs)
+        while IFS= read -r p; do
+          cp "$p" $out/nix/store/
+        done < ${nixClosure}/store-paths
+      '';
     };
 
     # ------------------------- INITRAMFS (cpio.gz of rootfs) -------------------------
@@ -92,8 +99,8 @@
       installPhase = ''
         set -euo pipefail
         mkdir root
-        rsync -av ${systemRoot}/ root/
-        chmod -R u+w root/
+        rsync -av --delete ${rootfs}/ root/
+        chmod -R u+w /root/
         test -x root/init
         test -x root/bin/sh
         test -x root/bin/busybox
@@ -167,7 +174,7 @@
               -m 1024 -nographic \
               -kernel ${kernel}/bzImage \
               -initrd ${initramfs} \
-              -append "console=ttyS0 init=/init" \
+              -append "console=ttyS0 rdinit=/init" \
               -nic user,model=virtio-net-pci
           '';
         });
