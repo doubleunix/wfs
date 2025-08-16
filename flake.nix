@@ -1,5 +1,5 @@
 {
-  description = "Wnix";
+  description = "Tiny LFS-style OS (one shared root for Docker + ISO/QEMU)";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -9,32 +9,31 @@
     pkgs   = import nixpkgs { inherit system; };
     lib    = nixpkgs.lib;
 
-    busybox = pkgs.pkgsStatic.busybox;
-    nix     = pkgs.nix;
-    cacert  = pkgs.cacert;
-    kernel  = pkgs.linuxPackages_latest.kernel;
+    bb     = pkgs.pkgsStatic.busybox;     # static, tiny
+    nix    = pkgs.nix;                    # dynamic, we’ll include its closure
+    cacert = pkgs.cacert;
+    kernel = pkgs.linuxPackages_latest.kernel;
 
     # Full runtime closure for nix so it runs in ISO/initramfs (offline)
     nixClosure = pkgs.closureInfo { rootPaths = [ nix ]; };
 
-    # -------- minimal root at / --------
+    # -------- minimal root at / (what Docker's copyToRoot should see) --------
     rootfs = pkgs.runCommand "wnix-rootfs" { } ''
       set -euo pipefail
       mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp}
       chmod 1777 $out/tmp
 
       # Shell + a couple of applets (we'll "install" the rest at boot)
-      #cp -a ${busybox}/bin/busybox  $out/bin/busybox
-      #ln -s busybox                 $out/bin/ls
-      #ln -s busybox                 $out/bin/cat
-      #ln -s busybox                 $out/bin/sh
+      cp -a ${bb}/bin/busybox  $out/bin/busybox
+      ln -s busybox            $out/bin/sh
+      ln -s busybox            $out/bin/ls
+      ln -s busybox            $out/bin/cat
 
-      ln -s ${nix}/bin/nix           $out/bin/nix
+      # nix CLI in PATH (libs come from nixStore below)
+      ln -s ${nix}/bin/nix     $out/bin/nix
 
-      ${busybox}/bin/busybox --install -s $out/bin
-
-      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt \
-                 $out/etc/ssl/certs/ca-bundle.crt
+      # certs + tiny config
+      ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
 
       cp -a ${./root/bin/wnix} $out/bin/wnix
 
@@ -81,17 +80,16 @@
     stage1Init = pkgs.writeShellScript "init" ''
       set -euo pipefail
       export PATH=/bin
-      export HOME=/root
-      mkdir -p /proc /sys /dev /run /root
+      /bin/busybox --install -s /bin || true
+      # Ensure mount points exist *before* mounting (fixes ENOENT)
+      mkdir -p /proc /sys /dev /dev/pts /dev/shm /run
 
       mount -t proc     proc     /proc
       mount -t sysfs    sysfs    /sys
-      mount -t tmpfs    tmpfs    /run
-      mount -t devtmpfs devtmpfs /dev
-
-      mkdir -p /dev/{pts,shm}
-      mount -t devpts   devpts   /dev/pts
-      mount -t tmpfs    tmpfs    /dev/shm
+      mount -t devtmpfs devtmpfs /dev || true
+      mount -t devpts   devpts   /dev/pts || true
+      mount -t tmpfs    tmpfs    /dev/shm || true
+      mount -t tmpfs    tmpfs    /run || true
 
       echo "Wnix is alive!"
       exec /bin/sh
@@ -103,8 +101,10 @@
       ''
         set -euo pipefail
         mkdir -p root
+        # Deref symlinks from systemRoot so binaries are *real* files in RAM.
         rsync -a --copy-links --chmod=Du+w ${systemRoot}/ root/
         install -Dm0755 ${stage1Init} root/init
+        # sanity
         test -x root/bin/sh
         test -x root/bin/busybox
         test -e root/nix/store
@@ -141,12 +141,13 @@
   in
   {
     packages.${system} = {
+      # Docker: same root; your -v nix:/nix still overrides /nix if you want
       docker = pkgs.dockerTools.buildImage {
         name = "wnix";
         tag  = "latest";
-        copyToRoot = [ systemRoot ];
+        copyToRoot = [ systemRoot ];  # add one thing, not many
         config = {
-          Entrypoint = [ "/bin/sh" ];
+          Entrypoint = [ "/bin/sh" ]; # BusyBox sh
           WorkingDir = "/";
           Env = [
             "HOME=/root"
