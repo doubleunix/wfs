@@ -35,16 +35,21 @@
         ln -s ${nix}/bin/nix $out/bin/nix
         ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
 
+        # Optional helper script (if present in repo)
+        if [ -e ${./root/bin/wnix} ]; then
+          install -Dm0755 ${./root/bin/wnix} $out/bin/wnix
+        fi
+
         cat > $out/etc/os-release <<'EOF'
         ID=wnix
         NAME="WNIX"
         EOF
 
-        cat > $out/etc/passwd << 'EOF'
+        cat > $out/etc/passwd << 'EOF
         root:x:0:0:Root:/root:/bin/sh
         EOF
 
-        cat > $out/etc/group << 'EOF'
+        cat > $out/etc/group << 'EOF
         root:x:0:
         EOF
 
@@ -60,14 +65,17 @@
         # /init (PID 1)
         cat > $out/init <<'EOF'
         #!/bin/sh
+        #set -eu
 
         export PATH=/bin
-        export HOME=/root
+        # /bin/busybox --install -s /bin
 
-        mknod -m 666 /dev/null    c 1 3
-        mknod -m 622 /dev/console c 5 1
-        mknod -m 666 /dev/tty     c 5 0
+        # early /dev (belt & suspenders)
+        mknod -m 666 /dev/null    c 1 3 || true
+        mknod -m 622 /dev/console c 5 1 || true
+        mknod -m 666 /dev/tty     c 5 0 || true
 
+        export PATH=/bin HOME=/root
         mkdir -p /proc /sys /dev /run /root /dev/pts /dev/shm
 
         mount -t proc     proc     /proc
@@ -78,10 +86,10 @@
         mount -t tmpfs    tmpfs    /dev/shm
 
         # Simple DHCP on eth0 (QEMU -nic user provides DHCP)
-        # ip link set dev eth0 up 2>/dev/null || true
-        # if command -v udhcpc >/dev/null; then
-        #   udhcpc -i eth0 -t 10 -T 3 || true
-        # fi
+        ip link set dev eth0 up 2>/dev/null || true
+        if command -v udhcpc >/dev/null; then
+          udhcpc -i eth0 -t 10 -T 3 || true
+        fi
 
         echo "Wnix is alive!"
         exec /bin/sh
@@ -89,9 +97,9 @@
         chmod +x $out/init
 
         # Offline Nix runtime closure inside rootfs (for ISO/initramfs)
-        #while IFS= read -r p; do
-        #  cp -a "$p" $out/nix/store/
-        #done < ${nixClosure}/store-paths
+        while IFS= read -r p; do
+          cp -a "$p" $out/nix/store/
+        done < ${nixClosure}/store-paths
       '';
     };
 
