@@ -76,10 +76,6 @@
       mount -t devpts   devpts   /dev/pts
       mount -t tmpfs    tmpfs    /dev/shm
 
-      mknod -m 666 /dev/null    c 1 3
-      mknod -m 622 /dev/console c 5 1
-      mknod -m 666 /dev/tty     c 5 0
-
       echo "Wnix is alive!"
       exec /bin/sh
       EOF
@@ -107,7 +103,6 @@
         chmod -Rv u+w root/
         test -x root/bin/sh
         test -x root/bin/busybox
-        test -x root/init
         test -e root/nix/store
         (cd root; find . -print0 | cpio --null -ov --format=newc | gzip -9) > $out
       '';
