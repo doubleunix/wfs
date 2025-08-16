@@ -21,20 +21,16 @@
     rootfs = pkgs.stdenvNoCC.mkDerivation {
       name = "wnix-rootfs";
       dontUnpack = true;
-      dontFixup = true;
-      dontPatchShebangs = true;
-      nativeBuildInputs = [ ];
+      nativeBuildInputs = [ busybox ];
       installPhase = ''
         set -euo pipefail
         mkdir -p $out/{bin,etc/nix,etc/ssl/certs,tmp,nix/store}
         chmod 1777 $out/tmp
 
+        cp -v ${busybox}/bin/busybox $out/bin/busybox
+        cp -v ${bash}/bin/bash $out/bin/sh
         ln -s ${nix}/bin/nix $out/bin/nix
         ln -s ${cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
-
-        cp -v ${busybox}/bin/busybox $out/bin/busybox
-        ln -sf busybox $out/bin/sh
-        $out/bin/busybox --install -s $out/bin
 
         cat > $out/etc/os-release <<'EOF'
         ID=wnix
@@ -59,7 +55,6 @@
         EOF
 
         cat > $out/init <<'EOF'
-        #!/bin/sh
         export PATH=/bin
         export HOME=/root
 
@@ -172,7 +167,7 @@
               -m 1024 -nographic \
               -kernel ${kernel}/bzImage \
               -initrd ${initramfs} \
-              -append "console=ttyS0 rdinit=/init" \
+              -append "console=ttyS0 init=/init" \
               -nic user,model=virtio-net-pci
           '';
         });
