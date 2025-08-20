@@ -1,6 +1,6 @@
-# wnix
+# wfs
 
-Double Unix
+Wnix From Scratch
 
 ## build
 
